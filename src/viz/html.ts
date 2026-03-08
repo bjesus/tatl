@@ -1510,7 +1510,7 @@ function solve(fromHistory) {
 function solveFormula(f, a, r) {
   throw new Error('Solver not loaded. Build with: bun run src/build-html.ts');
 }
-<\\/script>
+</script>
 </body>
 </html>`;
 }

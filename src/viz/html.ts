@@ -17,7 +17,7 @@ export function generateHTML(result?: TableauResult): string {
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>CMAEL(CD) Tableau Solver</title>
+<title>ATL Tableau Solver</title>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
 <script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
 <style>
@@ -127,11 +127,6 @@ input[type="text"]::placeholder { color: #bbb; }
 }
 .btn:hover { background: #3d5d8a; }
 .btn:active { transform: translateY(1px); }
-.checkbox-label {
-  display: inline-flex; align-items: center; gap: 5px;
-  font-size: 0.8em; color: var(--text-muted); cursor: pointer; user-select: none;
-}
-.checkbox-label input { accent-color: var(--accent); }
 .loading { display: none; color: var(--text-muted); font-style: italic; font-size: 0.82em; }
 
 /* Parse error */
@@ -427,8 +422,8 @@ input[type="text"]::placeholder { color: #bbb; }
   flex-shrink: 0; padding: 2px 7px; border-radius: 4px; font-size: 0.76em;
   font-weight: 600; letter-spacing: 0.03em;
 }
-.elim-badge.e1 { background: #fef3c7; color: #92400e; }
-.elim-badge.e2 { background: #fee2e2; color: #991b1b; }
+.elim-badge.e2 { background: #fef3c7; color: #92400e; }
+.elim-badge.e3 { background: #fee2e2; color: #991b1b; }
 .elim-id { font-weight: 600; color: var(--text); min-width: 28px; }
 .elim-reason { color: var(--text-muted); line-height: 1.5; }
 .elim-reason .katex { font-size: 0.88em; }
@@ -466,19 +461,19 @@ input[type="text"]::placeholder { color: #bbb; }
   <!-- ======= LEFT PANEL ======= -->
   <div class="left-panel">
     <div class="app-header">
-      <h1>Epistemic Logic Tableau Solver</h1>
+      <h1>ATL Tableau Solver</h1>
       <div class="subtitle">
-        This tool checks whether a formula of <strong title="Complete Multiagent Epistemic Logic with Common and Distributed knowledge" style="cursor:help;text-decoration:underline;text-decoration-style:dotted;text-underline-offset:2px">CMAEL(CD)</strong> is <em>satisfiable</em>: that is,
-        whether there exists a Kripke model and a state where the formula is true.
-        CMAEL(CD) extends standard multiagent epistemic logic with operators for <em>common knowledge</em>
-        (<span class="katex-placeholder" data-tex="\\mathbf{C}_A \\varphi"></span> &mdash; every agent in coalition
-        <span class="katex-placeholder" data-tex="A"></span> knows <span class="katex-placeholder" data-tex="\\varphi"></span>,
-        and everyone knows that everyone knows it, ad infinitum) and <em>distributed knowledge</em>
-        (<span class="katex-placeholder" data-tex="\\mathbf{D}_A \\varphi"></span> &mdash; <span class="katex-placeholder" data-tex="\\varphi"></span>
-        follows from the combined knowledge of all agents in <span class="katex-placeholder" data-tex="A"></span>).
+        This tool checks whether a formula of <strong title="Alternating-time Temporal Logic" style="cursor:help;text-decoration:underline;text-decoration-style:dotted;text-underline-offset:2px">ATL</strong> is <em>satisfiable</em>: that is,
+        whether there exists a concurrent game structure and a state where the formula is true.
+        ATL extends temporal logic with coalition operators for <em>strategic reasoning</em>:
+        <span class="katex-placeholder" data-tex="\\langle\\!\\langle A \\rangle\\!\\rangle \\!\\bigcirc \\varphi"></span> (coalition
+        <span class="katex-placeholder" data-tex="A"></span> can ensure
+        <span class="katex-placeholder" data-tex="\\varphi"></span> at the next step),
+        <span class="katex-placeholder" data-tex="\\langle\\!\\langle A \\rangle\\!\\rangle \\Box \\varphi"></span> (always), and
+        <span class="katex-placeholder" data-tex="\\langle\\!\\langle A \\rangle\\!\\rangle (\\varphi \\mathbin{\\mathcal{U}} \\psi)"></span> (until).
       </div>
       <div class="credit">
-        Based on <a href="https://arxiv.org/abs/1201.5346" target="_blank" rel="noopener">Ajspur, Goranko &amp; Shkatov (2012)</a>
+        Based on <a href="https://doi.org/10.1016/j.artint.2009.04.003" target="_blank" rel="noopener">Goranko &amp; Shkatov (2009)</a>
       </div>
     </div>
 
@@ -488,15 +483,11 @@ input[type="text"]::placeholder { color: #bbb; }
       <div class="left-section">
         <div class="section-title">Formula</div>
         <div class="formula-input-wrap" id="formula-input-wrap">
-          <input type="text" id="formula-input" placeholder="e.g.  (Ka p & ~Kb p)" autocomplete="off" spellcheck="false" />
+          <input type="text" id="formula-input" placeholder="e.g.  <<a>>X p" autocomplete="off" spellcheck="false" />
           <button class="input-clear" id="input-clear" onclick="clearInput()" title="Clear">&times;</button>
         </div>
         <div class="actions">
           <button class="btn" id="solve-btn" onclick="solve()">Check Satisfiability</button>
-          <label class="checkbox-label">
-            <input type="checkbox" id="restricted-cuts" checked />
-            Restricted cuts (C1/C2)
-          </label>
           <span class="loading" id="loading">Solving...</span>
         </div>
         <div id="parse-error" class="parse-error"></div>
@@ -506,12 +497,12 @@ input[type="text"]::placeholder { color: #bbb; }
       <div class="left-section">
         <div class="section-title">Examples</div>
         <div class="examples">
-          <button class="example-btn" onclick="setExample('(Ka p & ~Kb p)')">Ka p and not Kb p</button>
-          <button class="example-btn" onclick="setExample('C{a,b} p')">Common knowledge</button>
-          <button class="example-btn" onclick="setExample('(Ka p & ~p)')">Veridicality</button>
-          <button class="example-btn" onclick="setExample('(~D{a,c} C{a,b} p & C{a,b} (p & q))')">Paper Ex. 3</button>
-          <button class="example-btn" onclick="setExample('(~D{a,b} p & ~D{a,c} ~Ka p)')">Paper Ex. 4</button>
-          <button class="example-btn" onclick="setExample('(C{a,b} Ka p -> ~C{b,c} Kb p)')">Paper Ex. 5</button>
+          <button class="example-btn" onclick="setExample('<<a>>X p')">Next</button>
+          <button class="example-btn" onclick="setExample('<<a>>G p')">Always</button>
+          <button class="example-btn" onclick="setExample('<<a>>(p U q)')">Until</button>
+          <button class="example-btn" onclick="setExample('(<<a>>X p & <<b>>X ~p)')">Conflicting strategies</button>
+          <button class="example-btn" onclick="setExample('<<>>F p')">Eventually (empty coal.)</button>
+          <button class="example-btn" onclick="setExample('<<a,b>>G (p | q)')">Coalition always</button>
         </div>
       </div>
 
@@ -524,17 +515,17 @@ input[type="text"]::placeholder { color: #bbb; }
           <div class="syntax-item"><code>(p & q)</code> &mdash; <span class="katex-placeholder" data-tex="(p \\wedge q)"></span></div>
           <div class="syntax-item"><code>(p | q)</code> &mdash; <span class="katex-placeholder" data-tex="(p \\vee q)"></span></div>
           <div class="syntax-item"><code>(p -> q)</code> &mdash; <span class="katex-placeholder" data-tex="(p \\to q)"></span></div>
-          <div class="syntax-item"><code>Ka p</code> &mdash; <span class="katex-placeholder" data-tex="\\mathbf{K}_a\\, p"></span> (agent <em>a</em> knows <em>p</em>)</div>
-          <div class="syntax-item"><code>K{a,b} p</code> &mdash; <span class="katex-placeholder" data-tex="(\\mathbf{K}_a\\, p \\wedge \\mathbf{K}_b\\, p)"></span> (a and b knows)</div>
-          <div class="syntax-item"><code>D{a,b} p</code> &mdash; <span class="katex-placeholder" data-tex="\\mathbf{D}_{\\{a,b\\}}\\, p"></span> (distributed knowledge)</div>
-          <div class="syntax-item"><code>C{a,b} p</code> &mdash; <span class="katex-placeholder" data-tex="\\mathbf{C}_{\\{a,b\\}}\\, p"></span> (common knowledge)</div>
+          <div class="syntax-item"><code>&lt;&lt;a&gt;&gt;X p</code> &mdash; <span class="katex-placeholder" data-tex="\\langle\\!\\langle a \\rangle\\!\\rangle \\!\\bigcirc p"></span> (next)</div>
+          <div class="syntax-item"><code>&lt;&lt;a,b&gt;&gt;G p</code> &mdash; <span class="katex-placeholder" data-tex="\\langle\\!\\langle a,b \\rangle\\!\\rangle \\Box p"></span> (always)</div>
+          <div class="syntax-item"><code>&lt;&lt;a&gt;&gt;F p</code> &mdash; <span class="katex-placeholder" data-tex="\\langle\\!\\langle a \\rangle\\!\\rangle \\Diamond p"></span> (eventually, sugar for <span class="katex-placeholder" data-tex="\\top \\mathbin{\\mathcal{U}} p"></span>)</div>
+          <div class="syntax-item"><code>&lt;&lt;a&gt;&gt;(p U q)</code> &mdash; <span class="katex-placeholder" data-tex="\\langle\\!\\langle a \\rangle\\!\\rangle (p \\mathbin{\\mathcal{U}} q)"></span> (until)</div>
+          <div class="syntax-item"><code>&lt;&lt;&gt;&gt;X p</code> &mdash; <span class="katex-placeholder" data-tex="\\langle\\!\\langle \\emptyset \\rangle\\!\\rangle \\!\\bigcirc p"></span> (empty coalition)</div>
         </div>
       </div>
 
     </div>
     <div class="left-footer">
       <button class="footer-btn" onclick="openAboutModal()">How it works</button>
-      <a class="footer-btn" href="https://github.com/bjesus/cmaelcd" target="_blank" rel="noopener">Source code</a>
     </div>
   </div>
 
@@ -600,7 +591,7 @@ input[type="text"]::placeholder { color: #bbb; }
 
     <div class="about-section">
       <h3>The Algorithm</h3>
-      <p>The algorithm is a <em>tableau-based decision procedure</em> that works in three phases:</p>
+      <p>The algorithm is a <em>tableau-based decision procedure</em> for Alternating-time Temporal Logic (ATL) that works in three phases:</p>
       <div class="phase-explain">
         <div class="phase-step">
           <div class="phase-num">1</div>
@@ -609,10 +600,12 @@ input[type="text"]::placeholder { color: #bbb; }
             Starting from the input formula, the algorithm builds a graph of <em>prestates</em> and <em>states</em>.
             A prestate is a set of formulas waiting to be expanded. Each prestate is expanded into one or more
             <em>fully expanded, downward saturated</em> states by applying logical decomposition rules
-            (splitting conjunctions, branching on disjunctions, and handling modal operators).
-            For each diamond formula (<span class="katex-placeholder" data-tex="\\neg \\mathbf{D}_A \\varphi"></span>)
-            in a state, a new prestate is created as a successor, ensuring the model has the required transitions.
-            The process continues until no new prestates or states need to be created. This builds the <em>pretableau</em>.
+            (splitting conjunctions, branching on disjunctions, and handling ATL operators).
+            For the Next rule, each state&rsquo;s next-time formulas
+            (<span class="katex-placeholder" data-tex="\\langle\\!\\langle A \\rangle\\!\\rangle \\!\\bigcirc \\varphi"></span> and
+            <span class="katex-placeholder" data-tex="\\neg \\langle\\!\\langle A \\rangle\\!\\rangle \\!\\bigcirc \\varphi"></span>)
+            are used to create successor prestates via <em>move vectors</em> &mdash; one for each combination of agent choices
+            compatible with the coalition constraints. This builds the <em>pretableau</em>.
           </div>
         </div>
         <div class="phase-step">
@@ -631,9 +624,10 @@ input[type="text"]::placeholder { color: #bbb; }
             <strong>State Elimination</strong><br>
             The algorithm iteratively removes &ldquo;defective&rdquo; states. Two types of defects are checked in a dovetailed loop:
             <ul style="margin:8px 0 4px 20px">
-              <li><strong>E1:</strong> If a state contains a diamond formula but has no matching successor, it is eliminated.</li>
-              <li><strong>E2:</strong> <em>Eventualities</em> (arising from negated common knowledge formulas like
-                <span class="katex-placeholder" data-tex="\\neg \\mathbf{C}_A \\varphi"></span>) must be
+              <li><strong>E2:</strong> If a state requires a successor (via a move vector) but no matching successor exists, it is eliminated.</li>
+              <li><strong>E3:</strong> <em>Eventualities</em> (arising from
+                <span class="katex-placeholder" data-tex="\\langle\\!\\langle A \\rangle\\!\\rangle (\\varphi \\mathbin{\\mathcal{U}} \\psi)"></span> and
+                <span class="katex-placeholder" data-tex="\\neg \\langle\\!\\langle A \\rangle\\!\\rangle \\Box \\varphi"></span> formulas) must be
                 <em>realized</em>: there must be a finite path of accessible states witnessing the eventuality.
                 States where an eventuality cannot be realized are eliminated.</li>
             </ul>
@@ -643,9 +637,7 @@ input[type="text"]::placeholder { color: #bbb; }
       </div>
       <p style="margin-top:12px">
         The input formula is <strong>satisfiable</strong> if and only if the final tableau still contains a state
-        that includes the input formula. The tool also supports <strong>restricted cut conditions (C1/C2)</strong>,
-        an optimization from the paper that dramatically reduces the number of states explored (e.g., from 113 to 30 states
-        in Example 5) without affecting correctness.
+        that includes the input formula.
       </p>
     </div>
 
@@ -654,39 +646,43 @@ input[type="text"]::placeholder { color: #bbb; }
       <table class="about-table">
         <tr><th>Operator</th><th>Syntax</th><th>Meaning</th></tr>
         <tr>
-          <td><span class="katex-placeholder" data-tex="\\mathbf{K}_a \\varphi"></span></td>
-          <td><code>Ka p</code></td>
-          <td>Agent <em>a</em> knows <span class="katex-placeholder" data-tex="\\varphi"></span></td>
+          <td><span class="katex-placeholder" data-tex="\\langle\\!\\langle A \\rangle\\!\\rangle \\!\\bigcirc \\varphi"></span></td>
+          <td><code>&lt;&lt;a&gt;&gt;X p</code></td>
+          <td>Coalition <span class="katex-placeholder" data-tex="A"></span> can ensure <span class="katex-placeholder" data-tex="\\varphi"></span> at the next step</td>
         </tr>
         <tr>
-          <td><span class="katex-placeholder" data-tex="\\bigwedge_{a \\in A} \\mathbf{K}_a \\varphi"></span></td>
-          <td><code>K{a,b} p</code></td>
-          <td>Every agent in <span class="katex-placeholder" data-tex="A"></span> individually knows <span class="katex-placeholder" data-tex="\\varphi"></span></td>
+          <td><span class="katex-placeholder" data-tex="\\langle\\!\\langle A \\rangle\\!\\rangle \\Box \\varphi"></span></td>
+          <td><code>&lt;&lt;a&gt;&gt;G p</code></td>
+          <td>Coalition <span class="katex-placeholder" data-tex="A"></span> can ensure <span class="katex-placeholder" data-tex="\\varphi"></span> always holds</td>
         </tr>
         <tr>
-          <td><span class="katex-placeholder" data-tex="\\mathbf{D}_A \\varphi"></span></td>
-          <td><code>D{a,b} p</code></td>
-          <td>It is distributed knowledge among <span class="katex-placeholder" data-tex="A"></span> that <span class="katex-placeholder" data-tex="\\varphi"></span></td>
+          <td><span class="katex-placeholder" data-tex="\\langle\\!\\langle A \\rangle\\!\\rangle \\Diamond \\varphi"></span></td>
+          <td><code>&lt;&lt;a&gt;&gt;F p</code></td>
+          <td>Coalition <span class="katex-placeholder" data-tex="A"></span> can ensure <span class="katex-placeholder" data-tex="\\varphi"></span> eventually holds</td>
         </tr>
         <tr>
-          <td><span class="katex-placeholder" data-tex="\\mathbf{C}_A \\varphi"></span></td>
-          <td><code>C{a,b} p</code></td>
-          <td>It is common knowledge among <span class="katex-placeholder" data-tex="A"></span> that <span class="katex-placeholder" data-tex="\\varphi"></span></td>
+          <td><span class="katex-placeholder" data-tex="\\langle\\!\\langle A \\rangle\\!\\rangle (\\varphi \\mathbin{\\mathcal{U}} \\psi)"></span></td>
+          <td><code>&lt;&lt;a&gt;&gt;(p U q)</code></td>
+          <td>Coalition <span class="katex-placeholder" data-tex="A"></span> can ensure <span class="katex-placeholder" data-tex="\\varphi"></span> until <span class="katex-placeholder" data-tex="\\psi"></span></td>
+        </tr>
+        <tr>
+          <td><span class="katex-placeholder" data-tex="\\langle\\!\\langle \\emptyset \\rangle\\!\\rangle \\!\\bigcirc \\varphi"></span></td>
+          <td><code>&lt;&lt;&gt;&gt;X p</code></td>
+          <td>The empty coalition can ensure <span class="katex-placeholder" data-tex="\\varphi"></span> next (holds on all paths)</td>
         </tr>
       </table>
       <p style="margin-top:8px;font-size:0.88em;color:var(--text-muted)">
-        Note: <code>Ka p</code> is equivalent to <code>D{a} p</code> &mdash; individual knowledge is distributed knowledge for a singleton coalition.
-        <code>K{a,b} p</code> is syntactic sugar for <code>(Ka p &amp; Kb p)</code>.
+        Note: <code>&lt;&lt;a&gt;&gt;F p</code> is syntactic sugar for <code>&lt;&lt;a&gt;&gt;(T U p)</code>,
+        where <code>T</code> represents <span class="katex-placeholder" data-tex="\\top"></span>.
       </p>
     </div>
 
     <div class="about-section about-credits">
       <h3>Reference</h3>
       <p>
-        <strong>Tableau-based decision procedure for the multiagent epistemic logic with all coalitional operators
-        for common and distributed knowledge</strong><br>
-        Mai Ajspur, Valentin Goranko, and Dmitry Shkatov (2012)<br>
-        <a href="https://arxiv.org/abs/1201.5346" target="_blank" rel="noopener" style="color:var(--accent)">arXiv:1201.5346v1</a>
+        <strong>Tableau-based decision procedure for full coalitional multiagent temporal logic of branching time</strong><br>
+        Valentin Goranko and Dmitry Shkatov (2009)<br>
+        <a href="https://doi.org/10.1016/j.artint.2009.04.003" target="_blank" rel="noopener" style="color:var(--accent)">Artificial Intelligence, 173(12&ndash;13), 1115&ndash;1153</a>
       </p>
     </div>
   </div>
@@ -1186,10 +1182,9 @@ function clearInput() {
   history.pushState(null, '', window.location.pathname);
 }
 
-function buildUrl(formula, restrictedCuts) {
+function buildUrl(formula) {
   var params = new URLSearchParams();
   if (formula) params.set('formula', formula);
-  if (!restrictedCuts) params.set('rc', '0');
   var qs = params.toString();
   return window.location.pathname + (qs ? '?' + qs : '');
 }
@@ -1222,13 +1217,9 @@ document.addEventListener('DOMContentLoaded', function() {
   var initFormula = params.get('formula');
   if (initFormula) {
     input.value = initFormula;
-    if (params.get('rc') === '0') {
-      document.getElementById('restricted-cuts').checked = false;
-    }
     updateClearBtn();
     // Replace current history entry with state so popstate works
-    var rc = document.getElementById('restricted-cuts').checked;
-    history.replaceState({ formula: initFormula, rc: rc }, '', buildUrl(initFormula, rc));
+    history.replaceState({ formula: initFormula }, '', buildUrl(initFormula));
     solve(true);
   } else {
     input.focus();
@@ -1240,7 +1231,6 @@ window.addEventListener('popstate', function(e) {
   var state = e.state;
   if (state && state.formula) {
     document.getElementById('formula-input').value = state.formula;
-    document.getElementById('restricted-cuts').checked = state.rc !== false;
     updateClearBtn();
     solve(true);
   } else {
@@ -1392,12 +1382,12 @@ function renderEliminationTrace(result) {
     html += 'All ' + result.stats.initialStates + ' states from the initial tableau were eliminated.';
     html += '</div>';
   } else {
-    var e1Count = result.stats.eliminationsE1 || 0;
     var e2Count = result.stats.eliminationsE2 || 0;
+    var e3Count = result.stats.eliminationsE3 || 0;
     html += '<div class="elim-summary">';
     html += 'All ' + result.stats.initialStates + ' states from the initial tableau were eliminated during Phase 3:';
-    if (e1Count > 0) html += '<br><strong>' + e1Count + '</strong> by rule <strong>E1</strong> (diamond formula had no valid successor)';
-    if (e2Count > 0) html += '<br><strong>' + e2Count + '</strong> by rule <strong>E2</strong> (eventuality could not be realized)';
+    if (e2Count > 0) html += '<br><strong>' + e2Count + '</strong> by rule <strong>E2</strong> (missing successor for a move vector)';
+    if (e3Count > 0) html += '<br><strong>' + e3Count + '</strong> by rule <strong>E3</strong> (eventuality could not be realized)';
     html += '</div>';
 
     html += '<div class="elim-list">';
@@ -1407,8 +1397,8 @@ function renderEliminationTrace(result) {
       html += '<span class="elim-badge ' + e.rule.toLowerCase() + '">' + e.rule + '</span>';
       html += '<span class="elim-id">' + e.stateId + '</span>';
       html += '<div class="elim-reason">';
-      if (e.rule === 'E1') {
-        html += 'Diamond formula <span data-tex="' + escAttr(e.formulaLatex) + '"></span> had no surviving successor state';
+      if (e.rule === 'E2') {
+        html += 'Move vector had no surviving successor state for <span data-tex="' + escAttr(e.formulaLatex) + '"></span>';
       } else {
         html += 'Eventuality <span data-tex="' + escAttr(e.formulaLatex) + '"></span> could not be realized (no finite witness path)';
       }
@@ -1440,7 +1430,7 @@ function displayResult(result, solveState) {
   var statsHtml = '<div class="banner-stats">' +
     '<div class="banner-stat" title="Phase 1 (Construction): Total nodes in the pretableau graph (' + result.stats.pretableauPrestates + ' prestates + ' + result.stats.pretableauStates + ' states). Prestates are intermediate expansion nodes; states are fully expanded possible worlds."><div class="num">' + pretableauNodes + '</div><div class="label">Pretableau</div></div>' +
     '<div class="banner-stat" title="Phase 2 (Prestate Elimination): States remaining after removing prestates and rewiring edges into direct state-to-state transitions. This is the starting point for state elimination."><div class="num">' + result.stats.initialStates + '</div><div class="label">Initial</div></div>' +
-    '<div class="banner-stat" title="Phase 3 (State Elimination): States surviving after removing defective states via rules E1 (missing successor) and E2 (unrealized eventuality). The formula is satisfiable iff this is greater than 0."><div class="num">' + result.stats.finalStates + '</div><div class="label">Final</div></div>' +
+    '<div class="banner-stat" title="Phase 3 (State Elimination): States surviving after removing defective states via rules E2 (missing successors) and E3 (unrealized eventualities). The formula is satisfiable iff this is greater than 0."><div class="num">' + result.stats.finalStates + '</div><div class="label">Final</div></div>' +
     '</div>';
   if (result.satisfiable) {
     banner.className = 'result-banner sat';
@@ -1474,8 +1464,8 @@ function displayResult(result, solveState) {
   
   // Update browser URL and history
   if (solveState && !solveState.fromHistory) {
-    var stateObj = { formula: solveState.formula, rc: solveState.restrictedCuts };
-    history.pushState(stateObj, '', buildUrl(solveState.formula, solveState.restrictedCuts));
+    var stateObj = { formula: solveState.formula };
+    history.pushState(stateObj, '', buildUrl(solveState.formula));
     section.scrollIntoView({ behavior: 'smooth', block: 'start' });
   }
 }
@@ -1496,7 +1486,6 @@ function solve(fromHistory) {
   const formula = document.getElementById('formula-input').value.trim();
   if (!formula) return;
 
-  const restrictedCuts = document.getElementById('restricted-cuts').checked;
   const errorEl = document.getElementById('parse-error');
   errorEl.style.display = 'none';
 
@@ -1506,11 +1495,11 @@ function solve(fromHistory) {
   }
 
   showSolving(true);
-  pendingSolve = { formula: formula, restrictedCuts: restrictedCuts, fromHistory: fromHistory };
+  pendingSolve = { formula: formula, fromHistory: fromHistory };
   
   if (window.__solverWorker) {
     window.__solverWorker.postMessage({
-      type: 'solve', formula: formula, restrictedCuts: restrictedCuts
+      type: 'solve', formula: formula
     });
   } else {
     showSolveError("Solver worker not initialized. Reload page.");
@@ -1521,7 +1510,7 @@ function solve(fromHistory) {
 function solveFormula(f, a, r) {
   throw new Error('Solver not loaded. Build with: bun run src/build-html.ts');
 }
-<\/script>
+<\\/script>
 </body>
 </html>`;
 }

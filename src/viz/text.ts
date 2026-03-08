@@ -10,9 +10,10 @@ import {
   type Formula,
   type FormulaSet,
   type Coalition,
+  type MoveVector,
   type SolidEdge,
 } from "../core/types.ts";
-import { printFormula, printFormulaSet, printFormulaUnicode } from "../core/printer.ts";
+import { printFormula, printFormulaSet, printFormulaUnicode, printMoveVector } from "../core/printer.ts";
 import { agentsInFormula } from "../core/formula.ts";
 
 /**
@@ -22,11 +23,11 @@ export function textSummary(result: TableauResult): string {
   const lines: string[] = [];
 
   lines.push("=".repeat(60));
-  lines.push("CMAEL(CD) Tableau Decision Procedure");
+  lines.push("ATL Tableau Decision Procedure");
   lines.push("=".repeat(60));
   lines.push("");
   lines.push(`Input formula: ${printFormula(result.inputFormula)}`);
-  const agents = [...agentsInFormula(result.inputFormula)].sort();
+  const agents = [...result.allAgents];
   lines.push(`Agents: {${agents.join(", ")}}`);
   lines.push("");
 
@@ -95,7 +96,7 @@ export function textVerbose(result: TableauResult): string {
   lines.push("");
   lines.push("=== Initial Tableau Edges ===");
   for (const edge of result.initialTableau.edges) {
-    lines.push(`  ${edge.from} --[${printFormula(edge.label)}]--> ${edge.to}`);
+    lines.push(`  ${edge.from} --[${printMoveVector(edge.label, result.allAgents)}]--> ${edge.to}`);
   }
   lines.push("");
 
@@ -113,7 +114,7 @@ export function textVerbose(result: TableauResult): string {
     lines.push("  (none)");
   }
   for (const edge of result.finalTableau.edges) {
-    lines.push(`  ${edge.from} --[${printFormula(edge.label)}]--> ${edge.to}`);
+    lines.push(`  ${edge.from} --[${printMoveVector(edge.label, result.allAgents)}]--> ${edge.to}`);
   }
 
   return lines.join("\n");
@@ -143,11 +144,10 @@ function compactLabel(id: string, fs: FormulaSet): string {
 
 /**
  * Generate a detailed label: state ID + all formulas.
- * Uses \l for left-aligned lines in DOT.
  */
 function detailedLabel(id: string, fs: FormulaSet): string {
   const formulas = fs.toArray().map(printFormulaUnicode);
-  return id + "\n" + "─".repeat(Math.min(id.length + 6, 20)) + "\n" + formulas.join("\n");
+  return id + "\n" + "\u2500".repeat(Math.min(id.length + 6, 20)) + "\n" + formulas.join("\n");
 }
 
 /**
@@ -158,84 +158,6 @@ function nodeLabel(id: string, fs: FormulaSet, detailed: boolean): string {
 }
 
 /**
- * Color palette for coalition/agent edges.
- */
-const COALITION_COLORS = [
-  '#e41a1c', // red
-  '#377eb8', // blue
-  '#4daf4a', // green
-  '#984ea3', // purple
-  '#ff7f00', // orange
-  '#f4a582', // light orange
-  '#a65628', // brown
-  '#f781bf', // pink
-  '#999999', // gray
-  '#000000', // black
-];
-
-/**
- * Extract the coalition from a diamond formula (¬D_A φ).
- */
-function extractCoalitionFromFormula(f: Formula): Coalition | null {
-  if (f.kind === 'not' && f.sub.kind === 'D') {
-    return f.sub.coalition;
-  }
-  return null;
-}
-
-/**
- * Extract all unique coalitions from edges in a tableau phase.
- */
-function extractCoalitions(edges: SolidEdge[]): Coalition[] {
-  const coalitionSet = new Map<string, Coalition>();
-  
-  for (const edge of edges) {
-    const coalition = extractCoalitionFromFormula(edge.label);
-    if (coalition) {
-      const key = [...coalition].join(',');
-      coalitionSet.set(key, coalition);
-    }
-  }
-  
-  // Sort: by size first, then lexicographically
-  const coalitions = Array.from(coalitionSet.values());
-  coalitions.sort((a, b) => {
-    if (a.length !== b.length) return a.length - b.length;
-    return [...a].join(',').localeCompare([...b].join(','));
-  });
-  
-  return coalitions;
-}
-
-/**
- * Assign colors to coalitions.
- */
-function assignColors(coalitions: Coalition[]): Map<string, string> {
-  const colorMap = new Map<string, string>();
-  
-  for (let i = 0; i < coalitions.length; i++) {
-    const coalition = coalitions[i]!;
-    const key = [...coalition].join(',');
-    const color = i < COALITION_COLORS.length
-      ? COALITION_COLORS[i]!
-      : `hsl(${(i * 360) / coalitions.length}, 70%, 50%)`;
-    colorMap.set(key, color);
-  }
-  
-  return colorMap;
-}
-
-/**
- * Format coalition for legend display.
- */
-function formatCoalitionForLegend(coalition: Coalition): string {
-  if (coalition.length === 1) {
-    return coalition[0]!;
-  }
-  return `{${[...coalition].join(',')}}`;
-}
-
-/**
  * Escape text for HTML-like labels in DOT.
  */
 function escapeHtml(s: string): string {
@@ -243,28 +165,13 @@ function escapeHtml(s: string): string {
 }
 
 /**
- * Generate DOT legend as HTML table.
+ * Format move vector for display.
  */
-function generateLegend(coalitions: Coalition[], colorMap: Map<string, string>): string {
-  if (coalitions.length === 0) return '';
-  
-  let rows = '';
-  for (const coalition of coalitions) {
-    const key = [...coalition].join(',');
-    const color = colorMap.get(key);
-    if (!color) continue;
-    const label = formatCoalitionForLegend(coalition);
-    rows += `    <TR><TD WIDTH="24" HEIGHT="16" BGCOLOR="${color}"></TD><TD ALIGN="LEFT">${escapeHtml(label)}</TD></TR>\n`;
+function formatMoveVector(mv: MoveVector, agents?: Coalition): string {
+  if (agents && agents.length === mv.length) {
+    return mv.map((v, i) => `${agents[i]}:${v}`).join(",");
   }
-  
-  return `  {
-    rank=min;
-    legend [shape=none, margin=0, label=<
-      <TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="4">
-        <TR><TD COLSPAN="2" BGCOLOR="#f5f5f5"><B>Agents</B></TD></TR>
-${rows}      </TABLE>
-    >];
-  }\n`;
+  return mv.join(",");
 }
 
 /**
@@ -277,6 +184,7 @@ export function toDot(
 ): string {
   const detailed = options.detailedLabels ?? false;
   const showEliminated = options.showEliminated ?? false;
+  const allAgents = result.allAgents;
   const lines: string[] = [];
   lines.push("digraph tableau {");
   lines.push("  rankdir=TB;");
@@ -285,20 +193,6 @@ export function toDot(
   lines.push('  node [shape=box, style="filled,rounded", fillcolor="#f8f9fa", color="#d0d0d0", fontsize=11, fontname="Helvetica"];');
   lines.push('  edge [fontsize=9, fontname="Helvetica", color="#888"];');
   lines.push("");
-
-  // Extract coalitions and assign colors
-  const edges = phase === "pretableau" 
-    ? result.pretableau.solidEdges 
-    : phase === "initial" 
-      ? result.initialTableau.edges 
-      : result.finalTableau.edges;
-  const coalitions = extractCoalitions(edges);
-  const colorMap = assignColors(coalitions);
-
-  // Add legend if there are any coalitions
-  if (coalitions.length > 0) {
-    lines.push(generateLegend(coalitions, colorMap));
-  }
 
   if (phase === "pretableau") {
     // Prestates as dashed ellipses
@@ -320,12 +214,10 @@ export function toDot(
     for (const edge of result.pretableau.dashedEdges) {
       lines.push(`  "${edge.from}" -> "${edge.to}" [style=dashed, color="#bbb"];`);
     }
-    // Solid edges (state → prestate transitions)
+    // Solid edges (state → prestate transitions with move vectors)
     for (const edge of result.pretableau.solidEdges) {
-      const label = printFormulaUnicode(edge.label);
-      const coalition = extractCoalitionFromFormula(edge.label);
-      const color = coalition ? colorMap.get([...coalition].join(',')) || "#4a6fa5" : "#4a6fa5";
-      lines.push(`  "${edge.from}" -> "${edge.to}" [label=" ${escDot(label)} ", color="${color}", fontcolor="${color}"];`);
+      const mvLabel = formatMoveVector(edge.label, allAgents);
+      lines.push(`  "${edge.from}" -> "${edge.to}" [label=" ${escDot(mvLabel)} ", color="#4a6fa5", fontcolor="#4a6fa5"];`);
     }
   } else {
     const tableau = phase === "initial" ? result.initialTableau : result.finalTableau;
@@ -335,9 +227,11 @@ export function toDot(
     if (showEliminated && phase === "final" && result.eliminations) {
       for (const rec of result.eliminations) {
         if (!eliminationMap.has(rec.stateId)) {
-          const reason = rec.rule === "E1"
-            ? `E1: ${printFormulaUnicode(rec.formula)} has no successor`
-            : `E2: eventuality ${printFormulaUnicode(rec.formula)} unrealized`;
+          const reason = rec.rule === "E2"
+            ? `E2: next-time formula ${printFormulaUnicode(rec.formula)} has no successor`
+            : rec.rule === "E3"
+              ? `E3: eventuality ${printFormulaUnicode(rec.formula)} unrealized`
+              : `E1: patent inconsistency`;
           eliminationMap.set(rec.stateId, reason);
         }
       }
@@ -354,36 +248,30 @@ export function toDot(
       lines.push(`  "${id}" [label="${escDot(label)}", fillcolor="${fill}", color="${border}", penwidth=${penwidth}, tooltip="${escDot(tooltip)}"];`);
     }
 
-    // Eliminated states (shown as faded red, only for final phase)
+    // Eliminated states (shown as faded red)
     if (showEliminated && phase === "final") {
       for (const [id, state] of result.initialTableau.states) {
-        if (tableau.states.has(id)) continue; // still alive, skip
+        if (tableau.states.has(id)) continue;
         const reason = eliminationMap.get(id) || "eliminated";
         const elimLabel = detailed
-          ? detailedLabel(id + " ✗", state.formulas)
-          : `${id} ✗\n${reason}`;
+          ? detailedLabel(id + " \u2717", state.formulas)
+          : `${id} \u2717\n${reason}`;
         const tooltip = reason + "\n\n" + formulaSetTooltip(state.formulas);
         lines.push(`  "${id}" [label="${escDot(elimLabel)}", fillcolor="#fee2e2", color="#e5a0a0", fontcolor="#999", style="filled,rounded,dashed", tooltip="${escDot(tooltip)}"];`);
       }
 
-      // Show edges involving eliminated states as dashed with reduced opacity
+      // Show edges involving eliminated states as dashed
       for (const edge of result.initialTableau.edges) {
-        if (tableau.states.has(edge.from) && tableau.states.has(edge.to)) continue; // already shown below
-        const label = printFormulaUnicode(edge.label);
-        const coalition = extractCoalitionFromFormula(edge.label);
-        const baseColor = coalition ? colorMap.get([...coalition].join(',')) || "#888" : "#888";
-        // Create lighter version by using opacity in hex (add 99 for ~60% opacity)
-        const lightColor = baseColor + "66";
-        lines.push(`  "${edge.from}" -> "${edge.to}" [label=" ${escDot(label)} ", fontcolor="${lightColor}", color="${lightColor}", style=dashed];`);
+        if (tableau.states.has(edge.from) && tableau.states.has(edge.to)) continue;
+        const mvLabel = formatMoveVector(edge.label, allAgents);
+        lines.push(`  "${edge.from}" -> "${edge.to}" [label=" ${escDot(mvLabel)} ", fontcolor="#88888866", color="#88888866", style=dashed];`);
       }
     }
 
     // Surviving edges
     for (const edge of tableau.edges) {
-      const label = printFormulaUnicode(edge.label);
-      const coalition = extractCoalitionFromFormula(edge.label);
-      const color = coalition ? colorMap.get([...coalition].join(',')) || "#4a6fa5" : "#4a6fa5";
-      lines.push(`  "${edge.from}" -> "${edge.to}" [label=" ${escDot(label)} ", color="${color}", fontcolor="${color}"];`);
+      const mvLabel = formatMoveVector(edge.label, allAgents);
+      lines.push(`  "${edge.from}" -> "${edge.to}" [label=" ${escDot(mvLabel)} ", color="#4a6fa5", fontcolor="#4a6fa5"];`);
     }
   }
 

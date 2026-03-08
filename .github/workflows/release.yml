@@ -23,16 +23,16 @@ jobs:
       - run: bun install
 
       - name: Build Linux x64
-        run: bun build --compile --target=bun-linux-x64 src/index.ts --outfile dist-bin/cmael-linux-x64
+        run: bun build --compile --target=bun-linux-x64 src/index.ts --outfile dist-bin/atl-linux-x64
 
       - name: Build macOS x64 (darwin)
-        run: bun build --compile --target=bun-darwin-x64 src/index.ts --outfile dist-bin/cmael-macos-darwin-x64
+        run: bun build --compile --target=bun-darwin-x64 src/index.ts --outfile dist-bin/atl-macos-darwin-x64
 
       - name: Build macOS ARM64 (darwin)
-        run: bun build --compile --target=bun-darwin-arm64 src/index.ts --outfile dist-bin/cmael-macos-darwin-arm64
+        run: bun build --compile --target=bun-darwin-arm64 src/index.ts --outfile dist-bin/atl-macos-darwin-arm64
 
       - name: Build Windows x64
-        run: bun build --compile --target=bun-windows-x64 src/index.ts --outfile dist-bin/cmael-windows-x64.exe
+        run: bun build --compile --target=bun-windows-x64 src/index.ts --outfile dist-bin/atl-windows-x64.exe
 
       - uses: actions/upload-artifact@v4
         with:

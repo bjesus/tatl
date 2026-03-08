@@ -1,5 +1,5 @@
 /**
- * CMAEL(CD) Tableau Decision Procedure — CLI Entry Point
+ * ATL Tableau Decision Procedure — CLI Entry Point
  *
  * Usage:
  *   bun run src/index.ts <formula>
@@ -10,7 +10,6 @@
  *   --verbose              Show all phases in detail
  *   --dot [phase]          Output DOT graph (pretableau|initial|final)
  *   --html                 Output standalone HTML visualization
- *   --no-restricted-cuts   Disable C1/C2 cut restrictions
  *   --interactive          Interactive mode (read formulas from stdin)
  */
 
@@ -28,8 +27,6 @@ if (args.length === 0 || args.includes("--help") || args.includes("-h")) {
 }
 
 const verbose = args.includes("--verbose") || args.includes("-v");
-const noRestrictedCuts = args.includes("--no-restricted-cuts");
-const useRestrictedCuts = !noRestrictedCuts;
 const interactive = args.includes("--interactive") || args.includes("-i");
 const dotIndex = args.indexOf("--dot");
 const dotPhase = dotIndex >= 0 ? (args[dotIndex + 1] as "pretableau" | "initial" | "final" || "final") : null;
@@ -50,7 +47,7 @@ if (interactive) {
 function extractFormulaArg(args: string[]): string | null {
   const skipNext = new Set(["--dot"]);
   const skipFlags = new Set([
-    "--verbose", "-v", "--no-restricted-cuts", "--interactive", "-i",
+    "--verbose", "-v", "--interactive", "-i",
     "--html", "--help", "-h",
   ]);
 
@@ -77,7 +74,7 @@ function solveAndPrint(formulaStr: string): void {
     process.exit(1);
   }
 
-  const result = runTableau(formula, useRestrictedCuts);
+  const result = runTableau(formula);
 
   if (htmlOutput) {
     console.log(generateHTML(result));
@@ -105,7 +102,7 @@ async function runInteractive(): Promise<void> {
     output: process.stdout,
   });
 
-  console.log("CMAEL(CD) Tableau Decision Procedure — Interactive Mode");
+  console.log("ATL Tableau Decision Procedure — Interactive Mode");
   console.log("Enter a formula to check satisfiability. Type 'help' for syntax, 'quit' to exit.");
   console.log("");
 
@@ -134,25 +131,25 @@ async function runInteractive(): Promise<void> {
 
 function printHelp(): void {
   console.log(`
-CMAEL(CD) Tableau Decision Procedure
+ATL Tableau Decision Procedure
 
 Usage:
-  cmael <formula>                Check satisfiability of a formula
-  cmael --interactive            Interactive mode
-  cmael --help                   Show this help
+  atl <formula>                Check satisfiability of a formula
+  atl --interactive            Interactive mode
+  atl --help                   Show this help
 
 Options:
   --verbose, -v                  Show detailed output for all phases
   --dot [pretableau|initial|final]   Output DOT (Graphviz) graph
   --html                         Output standalone HTML visualization
-  --no-restricted-cuts           Disable C1/C2 cut restrictions
   --interactive, -i              Interactive REPL mode
 
 Examples:
-  cmael "(Ka p & ~Kb p)"
-  cmael "(~D{a,c} C{a,b} p & C{a,b} (p & q))"
-  cmael "(Ka p & ~p)" --verbose
-  cmael "C{a,b} p" --dot final > graph.dot
+  atl "<<a>>X p"
+  atl "(<<a>>X p & <<b>>X ~p)"
+  atl "<<a>>G p"
+  atl "<<a,b>>(p U q)"
+  atl "<<>>F p" --verbose
 `);
   printSyntaxHelp();
 }
@@ -160,19 +157,22 @@ Examples:
 function printSyntaxHelp(): void {
   console.log(`
 Formula Syntax:
-  Atoms:        p, q, r, myProp, ...
+  Atoms:        p, q, r, ...
   Negation:     ~p, ~(p & q)
   Conjunction:  (p & q)
   Disjunction:  (p | q)           desugars to ~(~p & ~q)
   Implication:  (p -> q)          desugars to ~(p & ~q)
-  Ind. knowl.:  Ka p              agent a knows p (= D{a} p)
-  Dist. knowl.: D{a,b} p          distributed knowledge among {a,b}
-  Com. knowl.:  C{a,b} p          common knowledge among {a,b}
+  Next:         <<a>>X p          coalition {a} enforces p at next step
+  Always:       <<a,b>>G p        coalition {a,b} enforces p forever
+  Eventually:   <<a>>F p          coalition {a} enforces eventually p
+  Until:        <<a>>(p U q)      coalition {a} enforces p until q
+  Empty coal.:  <<>>X p           empty coalition enforces next p
 
 Examples:
-  Ka p                            agent a knows p
-  (Ka p & ~Kb p)                  a knows p, b doesn't
-  (~D{a,c} C{a,b} p & C{a,b} (p & q))   Example 3 from paper (UNSAT)
-  (C{a,b} Ka p -> ~C{b,c} Kb p)  Example 5 from paper
+  <<a>>X p                        agent a enforces next p
+  (<<a>>X p & <<b>>X ~p)         a enforces next p, b enforces next not p
+  <<a>>G p                        a enforces always p
+  <<a,b>>(p U q)                  {a,b} enforce p until q
+  <<>>F p                         eventually p (empty coalition)
 `);
 }

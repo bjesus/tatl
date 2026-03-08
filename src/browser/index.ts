@@ -1,10 +1,10 @@
 /**
- * Browser entry point for the CMAEL(CD) Tableau Solver.
+ * Browser entry point for the ATL Tableau Solver.
  * Runs as a Web Worker to keep the UI responsive.
  */
 
 import { parseFormula } from "../core/parser.ts";
-import { printFormula, printFormulaSet, printFormulaLatex, printFormulaSetLatex } from "../core/printer.ts";
+import { printFormula, printFormulaSet, printFormulaLatex, printFormulaSetLatex, printMoveVector, printMoveVectorLatex } from "../core/printer.ts";
 import { runTableau } from "../core/tableau.ts";
 import { toDot } from "../viz/text.ts";
 import type { TableauResult } from "../core/types.ts";
@@ -13,7 +13,6 @@ import type { TableauResult } from "../core/types.ts";
 const ctx: any = self;
 
 // Load Viz.js (Synchronous import for classic workers)
-// This adds 'Viz' to the global scope
 importScripts('https://cdn.jsdelivr.net/npm/@viz-js/viz@3.11.0/lib/viz-standalone.js');
 
 let vizPromise: Promise<any> | null = null;
@@ -32,7 +31,7 @@ ctx.onmessage = async (e: MessageEvent) => {
       ctx.postMessage({ type: 'status', stage: 'Parsing formula...' });
       const formula = parseFormula(msg.formula);
 
-      const result = runTableau(formula, msg.restrictedCuts, (stage) => {
+      const result = runTableau(formula, (stage: string) => {
         ctx.postMessage({ type: 'status', stage });
       });
 
@@ -58,6 +57,7 @@ ctx.onmessage = async (e: MessageEvent) => {
 function serializeResult(result: TableauResult) {
   const inputKey = result.inputFormula;
   const inputLatex = printFormulaLatex(result.inputFormula);
+  const allAgents = result.allAgents;
 
   function serializeStates(states: typeof result.pretableau.states) {
     const out: Record<string, { formulas: string; formulasLatex: string; hasInput: boolean }> = {};
@@ -75,8 +75,8 @@ function serializeResult(result: TableauResult) {
     return edges.map((e) => ({
       from: e.from,
       to: e.to,
-      label: printFormula(e.label),
-      labelLatex: printFormulaLatex(e.label),
+      label: printMoveVector(e.label, allAgents),
+      labelLatex: printMoveVectorLatex(e.label, allAgents),
     }));
   }
 
@@ -107,8 +107,8 @@ function serializeResult(result: TableauResult) {
       initialEdges: result.initialTableau.edges.length,
       finalStates: result.finalTableau.states.size,
       finalEdges: result.finalTableau.edges.length,
-      eliminationsE1: eliminations.filter((e) => e.rule === "E1").length,
       eliminationsE2: eliminations.filter((e) => e.rule === "E2").length,
+      eliminationsE3: eliminations.filter((e) => e.rule === "E3").length,
     },
     eliminations,
     pretableau: {
@@ -124,7 +124,7 @@ function serializeResult(result: TableauResult) {
       states: serializeStates(result.finalTableau.states),
       edges: serializeEdges(result.finalTableau.edges),
     },
-    // DOT variants: compact and detailed, plus eliminated variants for final
+    // DOT variants
     dots: {
       pretableau: toDot(result, "pretableau"),
       initial: toDot(result, "initial"),

@@ -1,29 +1,33 @@
 /**
- * Core types for the CMAEL(CD) tableau decision procedure.
+ * Core types for the ATL tableau decision procedure.
  *
- * The logic CMAEL(CD) has:
+ * ATL (Alternating-time Temporal Logic) has:
  * - Atomic propositions p, q, r, ...
  * - Boolean connectives: negation (¬) and conjunction (∧)
- * - Distributed knowledge operator D_A for coalition A
- * - Common knowledge operator C_A for coalition A
+ * - Coalition next:   ⟨⟨A⟩⟩○ϕ  (coalition A can enforce ϕ at the next step)
+ * - Coalition always: ⟨⟨A⟩⟩□ϕ  (coalition A can enforce ϕ forever)
+ * - Coalition until:  ⟨⟨A⟩⟩ϕUψ (coalition A can enforce ϕ until ψ)
  *
- * BNF: φ := p | ¬φ | (φ₁ ∧ φ₂) | D_A φ | C_A φ
+ * BNF: ϕ := p | ¬ϕ | (ϕ₁ ∧ ϕ₂) | ⟨⟨A⟩⟩○ϕ | ⟨⟨A⟩⟩□ϕ | ⟨⟨A⟩⟩ϕ₁Uϕ₂
+ *
+ * Reference: Goranko & Shkatov 2009, Section 2
  */
 
-// An agent is just a name (string)
+// An agent is just a name (string, lowercase)
 export type Agent = string;
 
-// A coalition is a non-empty set of agents, represented as a sorted array for canonical form
-// We use sorted arrays instead of Set for deterministic ordering and easy comparison.
+// A coalition is a set of agents, represented as a sorted array for canonical form.
+// Unlike CMAEL(CD), coalitions CAN be empty (the empty coalition ⟨⟨∅⟩⟩).
 export type Coalition = readonly Agent[];
 
-// Formula AST — directly from the BNF on page 5 of the paper
+// Formula AST — directly from the BNF
 export type Formula =
   | { readonly kind: "atom"; readonly name: string }
   | { readonly kind: "not"; readonly sub: Formula }
   | { readonly kind: "and"; readonly left: Formula; readonly right: Formula }
-  | { readonly kind: "D"; readonly coalition: Coalition; readonly sub: Formula }
-  | { readonly kind: "C"; readonly coalition: Coalition; readonly sub: Formula };
+  | { readonly kind: "next"; readonly coalition: Coalition; readonly sub: Formula }
+  | { readonly kind: "always"; readonly coalition: Coalition; readonly sub: Formula }
+  | { readonly kind: "until"; readonly coalition: Coalition; readonly left: Formula; readonly right: Formula };
 
 // Constructors for convenience
 export function Atom(name: string): Formula {
@@ -38,15 +42,20 @@ export function And(left: Formula, right: Formula): Formula {
   return { kind: "and", left, right };
 }
 
-export function D(coalition: Coalition, sub: Formula): Formula {
-  return { kind: "D", coalition: normalizeCoalition(coalition), sub };
+export function Next(coalition: Coalition, sub: Formula): Formula {
+  return { kind: "next", coalition: normalizeCoalition(coalition), sub };
 }
 
-export function C(coalition: Coalition, sub: Formula): Formula {
-  return { kind: "C", coalition: normalizeCoalition(coalition), sub };
+export function Always(coalition: Coalition, sub: Formula): Formula {
+  return { kind: "always", coalition: normalizeCoalition(coalition), sub };
+}
+
+export function Until(coalition: Coalition, left: Formula, right: Formula): Formula {
+  return { kind: "until", coalition: normalizeCoalition(coalition), left, right };
 }
 
 // Sugar constructors
+
 export function Or(left: Formula, right: Formula): Formula {
   return Not(And(Not(left), Not(right)));
 }
@@ -55,17 +64,19 @@ export function Implies(left: Formula, right: Formula): Formula {
   return Not(And(left, Not(right)));
 }
 
-export function Ka(agent: Agent, sub: Formula): Formula {
-  return D([agent], sub);
+/** ⟨⟨A⟩⟩◇ϕ = ⟨⟨A⟩⟩⊤Uϕ — coalition A can enforce eventually ϕ */
+export function Eventually(coalition: Coalition, sub: Formula): Formula {
+  return Until(coalition, Atom("_top"), sub);
 }
 
-// Normalize a coalition to sorted, deduplicated form
+// Top and Bottom (useful internally)
+export const Top: Formula = Atom("_top");
+export const Bottom: Formula = Not(Top);
+
+// Normalize a coalition to sorted, deduplicated form.
+// Empty coalitions are allowed in ATL.
 export function normalizeCoalition(agents: readonly Agent[]): Coalition {
-  const sorted = [...new Set(agents)].sort();
-  if (sorted.length === 0) {
-    throw new Error("Coalition must be non-empty");
-  }
-  return sorted;
+  return [...new Set(agents)].sort();
 }
 
 // Check if coalition A is a subset of coalition B
@@ -87,6 +98,12 @@ export function coalitionEqual(a: Coalition, b: Coalition): boolean {
     if (a[i] !== b[i]) return false;
   }
   return true;
+}
+
+// Compute the complement of coalition A with respect to the full agent set Σ
+export function coalitionComplement(a: Coalition, allAgents: Coalition): Coalition {
+  const aSet = new Set(a);
+  return allAgents.filter((agent) => !aSet.has(agent));
 }
 
 // A FormulaSet is a set of formulas, keyed by their canonical string representation
@@ -177,10 +194,12 @@ export function formulaKey(f: Formula): string {
       return `~${formulaKey(f.sub)}`;
     case "and":
       return `(${formulaKey(f.left)}&${formulaKey(f.right)})`;
-    case "D":
-      return `D{${f.coalition.join(",")}}${formulaKey(f.sub)}`;
-    case "C":
-      return `C{${f.coalition.join(",")}}${formulaKey(f.sub)}`;
+    case "next":
+      return `<<${f.coalition.join(",")}>>X${formulaKey(f.sub)}`;
+    case "always":
+      return `<<${f.coalition.join(",")}>>G${formulaKey(f.sub)}`;
+    case "until":
+      return `<<${f.coalition.join(",")}>>U(${formulaKey(f.left)},${formulaKey(f.right)})`;
   }
 }
 
@@ -188,6 +207,16 @@ export function formulaKey(f: Formula): string {
 export function formulaEqual(a: Formula, b: Formula): boolean {
   return formulaKey(a) === formulaKey(b);
 }
+
+// --- Move vector types ---
+
+/**
+ * A MoveVector is a tuple of integers, one per agent (in the order of allAgents).
+ * Each integer represents which action that agent plays.
+ * For ATL, the range of each component is 0..k-1 where k depends on the
+ * number of next-time formulas (positive + negative).
+ */
+export type MoveVector = readonly number[];
 
 // --- Tableau graph types ---
 
@@ -212,10 +241,11 @@ export interface DashedEdge {
 }
 
 // A solid edge (transition relation): state → prestate (pretableau) or state → state (tableau)
+// In ATL, labels are move vectors (tuples of agent actions) instead of formulas.
 export interface SolidEdge {
   readonly from: NodeId;
   readonly to: NodeId;
-  readonly label: Formula; // the ¬D_A φ formula that triggered this edge
+  readonly label: MoveVector; // the move vector that triggered this edge
 }
 
 export interface Pretableau {
@@ -223,22 +253,29 @@ export interface Pretableau {
   states: Map<NodeId, State>;
   dashedEdges: DashedEdge[];
   solidEdges: SolidEdge[];
+  /** The ordered list of all agents (determines move vector indexing) */
+  allAgents: Coalition;
 }
 
 export interface Tableau {
   states: Map<NodeId, State>;
   edges: SolidEdge[];
+  /** The ordered list of all agents (determines move vector indexing) */
+  allAgents: Coalition;
 }
 
 // Elimination tracking — records why each state was removed in Phase 3
-export type EliminationRule = "E1" | "E2";
+export type EliminationRule = "E1" | "E2" | "E3";
 
 export interface EliminationRecord {
   /** The state that was eliminated */
   stateId: NodeId;
-  /** Which rule eliminated it: E1 (missing diamond successor) or E2 (unrealized eventuality) */
+  /** Which rule eliminated it:
+   *  E1 (patently inconsistent / no matching state)
+   *  E2 (missing next-time successor)
+   *  E3 (unrealized eventuality) */
   rule: EliminationRule;
-  /** The formula that caused elimination (diamond for E1, eventuality for E2) */
+  /** The formula that caused elimination */
   formula: Formula;
   /** The formulas the state contained when it was eliminated */
   stateFormulas: FormulaSet;
@@ -250,6 +287,8 @@ export interface TableauResult {
   initialTableau: Tableau;
   finalTableau: Tableau;
   inputFormula: Formula;
+  /** The ordered list of all agents */
+  allAgents: Coalition;
   /** Ordered list of state eliminations from Phase 3 */
   eliminations: EliminationRecord[];
 }

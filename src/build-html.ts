@@ -25,10 +25,9 @@ const bundleCode = await bundleResult.outputs[0]!.text();
 let html = generateHTML();
 
 // Inject the bundled solver code as a Blob-based Web Worker
-// This avoids blocking the main thread during solving and graph rendering
 const solverScript = `
 <script>
-// Bundled CMAEL(CD) solver worker
+// Bundled ATL solver worker
 var __workerCode = ${JSON.stringify(bundleCode)};
 var __workerBlob = new Blob([__workerCode], {type: 'application/javascript'});
 window.__workerBlobUrl = URL.createObjectURL(__workerBlob);

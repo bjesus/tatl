@@ -1,30 +1,29 @@
 /**
- * Recursive-descent parser for CMAEL(CD) formulas.
+ * Recursive-descent parser for ATL formulas.
  *
  * Syntax (all ASCII, no special symbols needed):
  *
- *   atom       := [a-z][a-z0-9_]*
- *   coalition  := '{' agent (',' agent)* '}'
+ *   atom       := [a-z][a-z0-9_]*   (except reserved: _top)
+ *   coalition  := '<<' (agent (',' agent)*)? '>>'
  *   agent      := [a-z][a-z0-9_]*
  *
  *   primary    := atom
  *              | '~' primary                    // negation
- *              | 'D' coalition primary           // distributed knowledge
- *              | 'C' coalition primary           // common knowledge
- *              | 'K' coalition primary           // everyone knows (sugar)
- *              | 'K' agent primary               // individual knowledge (sugar for D{a})
+ *              | coalition 'X' primary          // next: <<A>>X ϕ
+ *              | coalition 'G' primary          // always: <<A>>G ϕ
+ *              | coalition 'F' primary          // eventually: <<A>>F ϕ (sugar for <<A>>(⊤ U ϕ))
+ *              | coalition '(' expr 'U' expr ')'  // until: <<A>>(ϕ U ψ)
  *              | '(' expr ')'
  *
  *   expr       := primary (('&' | '|' | '->') primary)*
  *
  * Sugar:
- *   φ | ψ       desugars to  ~(~φ & ~ψ)
- *   φ -> ψ      desugars to  ~(φ & ~ψ)
- *   Ka φ        desugars to  D{a} φ
- *   K{a,b} φ    desugars to  (Ka φ & Kb φ)
+ *   ϕ | ψ        desugars to  ~(~ϕ & ~ψ)
+ *   ϕ -> ψ       desugars to  ~(ϕ & ~ψ)
+ *   <<A>>F ϕ     desugars to  <<A>>(_top U ϕ)
  *
  * Operator precedence (high to low):
- *   ~ (prefix), D/C/K (prefix), &, |, ->
+ *   ~ (prefix), <<A>>X/G/F/U (prefix), &, |, ->
  *
  * Examples:
  *   "p"
@@ -32,10 +31,11 @@
  *   "(p & q)"
  *   "(p | q)"
  *   "(p -> q)"
- *   "Ka p"
- *   "D{a,b} p"
- *   "C{a,b} (p & q)"
- *   "(~D{a,c} C{a,b} p & C{a,b} (p & q))"
+ *   "<<a>>X p"
+ *   "<<a,b>>G p"
+ *   "<<>>F p"
+ *   "<<a>>(p U q)"
+ *   "(<<a>>X p & ~<<b>>G q)"
  */
 
 import {
@@ -45,10 +45,12 @@ import {
   Atom,
   Not,
   And,
-  D,
-  C,
   Or,
   Implies,
+  Next,
+  Always,
+  Until,
+  Eventually,
 } from "./types.ts";
 
 class ParseError extends Error {
@@ -126,6 +128,11 @@ class Parser {
       return Not(sub);
     }
 
+    // Coalition operator: <<...>>
+    if (this.lookAhead("<<")) {
+      return this.parseCoalitionOp();
+    }
+
     // Parenthesized expression
     if (ch === "(") {
       this.advance(1);
@@ -134,50 +141,6 @@ class Parser {
       this.skipWhitespace();
       this.expect(")");
       return inner;
-    }
-
-    // D{...} — distributed knowledge
-    if (ch === "D" && this.pos + 1 < this.input.length && this.input[this.pos + 1] === "{") {
-      this.advance(1); // skip 'D'
-      const coalition = this.parseCoalition();
-      this.skipWhitespace();
-      const sub = this.parsePrimary();
-      return D(coalition, sub);
-    }
-
-    // C{...} — common knowledge
-    if (ch === "C" && this.pos + 1 < this.input.length && this.input[this.pos + 1] === "{") {
-      this.advance(1); // skip 'C'
-      const coalition = this.parseCoalition();
-      this.skipWhitespace();
-      const sub = this.parsePrimary();
-      return C(coalition, sub);
-    }
-
-    // K{...} — everyone knows (sugar: K{a,b} φ => (Ka φ & Kb φ))
-    if (ch === "K" && this.pos + 1 < this.input.length && this.input[this.pos + 1] === "{") {
-      this.advance(1); // skip 'K'
-      const coalition = this.parseCoalition();
-      if (coalition.length === 0) {
-        throw new ParseError("K{} requires at least one agent", this.pos);
-      }
-      this.skipWhitespace();
-      const sub = this.parsePrimary();
-      // Fold into conjunction: (Ka φ & (Kb φ & ...))
-      let result: Formula = D([coalition[coalition.length - 1]!], sub);
-      for (let i = coalition.length - 2; i >= 0; i--) {
-        result = And(D([coalition[i]!], sub), result);
-      }
-      return result;
-    }
-
-    // K<agent> — individual knowledge (sugar for D{agent})
-    if (ch === "K" && this.pos + 1 < this.input.length && this.isAgentChar(this.input[this.pos + 1]!)) {
-      this.advance(1); // skip 'K'
-      const agent = this.parseAgent();
-      this.skipWhitespace();
-      const sub = this.parsePrimary();
-      return D([agent], sub);
     }
 
     // Atom
@@ -191,10 +154,88 @@ class Parser {
     );
   }
 
-  private parseCoalition(): Coalition {
-    this.expect("{");
-    const agents: Agent[] = [];
+  /**
+   * Parse a coalition operator: <<A>>X ϕ, <<A>>G ϕ, <<A>>F ϕ, or <<A>>(ϕ U ψ)
+   */
+  private parseCoalitionOp(): Formula {
+    this.expect("<");
+    this.expect("<");
+    const coalition = this.parseCoalitionBody();
+    this.expect(">");
+    this.expect(">");
     this.skipWhitespace();
+
+    if (this.pos >= this.input.length) {
+      throw new ParseError("Expected temporal operator (X, G, F, or '(... U ...)') after coalition", this.pos);
+    }
+
+    const op = this.peek()!;
+
+    if (op === "X") {
+      // <<A>>X ϕ
+      this.advance(1);
+      this.skipWhitespace();
+      const sub = this.parsePrimary();
+      return Next(coalition, sub);
+    }
+
+    if (op === "G") {
+      // <<A>>G ϕ
+      this.advance(1);
+      this.skipWhitespace();
+      const sub = this.parsePrimary();
+      return Always(coalition, sub);
+    }
+
+    if (op === "F") {
+      // <<A>>F ϕ — sugar for <<A>>(⊤ U ϕ)
+      this.advance(1);
+      this.skipWhitespace();
+      const sub = this.parsePrimary();
+      return Eventually(coalition, sub);
+    }
+
+    if (op === "(") {
+      // <<A>>(ϕ U ψ)
+      this.advance(1);
+      this.skipWhitespace();
+      const left = this.parseExpr();
+      this.skipWhitespace();
+
+      // Expect 'U'
+      if (this.pos >= this.input.length || this.peek() !== "U") {
+        throw new ParseError(
+          `Expected 'U' in until expression at position ${this.pos}, got '${this.input[this.pos] ?? "EOF"}'`,
+          this.pos
+        );
+      }
+      this.advance(1); // skip 'U'
+      this.skipWhitespace();
+
+      const right = this.parseExpr();
+      this.skipWhitespace();
+      this.expect(")");
+      return Until(coalition, left, right);
+    }
+
+    throw new ParseError(
+      `Expected temporal operator (X, G, F, or '(... U ...)') after '>>', got '${op}' at position ${this.pos}`,
+      this.pos
+    );
+  }
+
+  /**
+   * Parse the body of a coalition: empty or comma-separated agent names.
+   * Does NOT consume the >> delimiters.
+   */
+  private parseCoalitionBody(): Coalition {
+    this.skipWhitespace();
+    // Empty coalition: <<>>
+    if (this.lookAhead(">>")) {
+      return [];
+    }
+
+    const agents: Agent[] = [];
     agents.push(this.parseAgent());
     this.skipWhitespace();
     while (this.peek() === ",") {
@@ -203,7 +244,6 @@ class Parser {
       agents.push(this.parseAgent());
       this.skipWhitespace();
     }
-    this.expect("}");
     return agents;
   }
 

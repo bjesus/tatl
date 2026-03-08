@@ -2,10 +2,10 @@
  * Formula utilities: subformulas, closure, extended closure, patent inconsistency.
  *
  * References:
- * - Definition 5 (p.8): Closure of a formula
- * - Definition 6 (p.8): Closure of a set of formulas
- * - Definition 7 (p.8): Patent inconsistency
- * - Definition 15 (p.17): Extended closure
+ * - Definition 4.4 (p.17): Closure of a formula
+ * - Definition 4.5 (p.17): Extended closure
+ * - Definition 4.3 (p.16): Patent inconsistency
+ * - Goranko & Shkatov 2009
  */
 
 import {
@@ -14,11 +14,12 @@ import {
   type Agent,
   FormulaSet,
   Not,
-  D,
+  Next,
+  And,
   formulaKey,
   coalitionSubset,
 } from "./types.ts";
-import { classifyFormula, type AlphaFormula, type BetaFormula } from "./classify.ts";
+import { classifyFormula } from "./classify.ts";
 
 /**
  * Get all subformulas of a formula (Sub(ψ) in the paper).
@@ -38,11 +39,15 @@ export function subformulas(f: Formula): FormulaSet {
         collect(g.left);
         collect(g.right);
         break;
-      case "D":
+      case "next":
         collect(g.sub);
         break;
-      case "C":
+      case "always":
         collect(g.sub);
+        break;
+      case "until":
+        collect(g.left);
+        collect(g.right);
         break;
     }
   }
@@ -64,12 +69,16 @@ export function subformulasOfSet(fs: FormulaSet): FormulaSet {
 }
 
 /**
- * Compute the closure of a formula (Definition 5, p.8).
+ * Compute the closure of a formula (Definition 4.4, p.17).
  *
- * cl(φ) is the smallest set such that:
- * 1. φ ∈ cl(φ)
- * 2. cl(φ) is closed under α- and β-components
- * 3. For any ψ and coalition A, if ¬D_A ψ ∈ cl(φ) then ¬ψ ∈ cl(φ)
+ * cl(θ) is the smallest set containing θ that is closed under:
+ * 1. α-components (if α ∈ cl(θ), then all α_i ∈ cl(θ))
+ * 2. β-components (if β ∈ cl(θ), then all β_i ∈ cl(θ))
+ *
+ * For ATL, this means e.g.:
+ * - If ⟨⟨A⟩⟩□ϕ ∈ cl(θ), then ϕ ∈ cl(θ) and ⟨⟨A⟩⟩○⟨⟨A⟩⟩□ϕ ∈ cl(θ)
+ * - If ⟨⟨A⟩⟩(ϕ U ψ) ∈ cl(θ), then ψ ∈ cl(θ) and (ϕ ∧ ⟨⟨A⟩⟩○⟨⟨A⟩⟩(ϕ U ψ)) ∈ cl(θ)
+ * - etc.
  */
 export function closure(f: Formula): FormulaSet {
   const result = new FormulaSet();
@@ -90,11 +99,9 @@ export function closure(f: Formula): FormulaSet {
       }
     }
 
-    // Rule 3: if ¬D_A ψ ∈ cl(φ) then ¬ψ ∈ cl(φ)
-    if (
-      current.kind === "not" &&
-      current.sub.kind === "D"
-    ) {
+    // For ¬⟨⟨A⟩⟩○ϕ, we need ¬ϕ in the closure as well
+    // (the Next rule needs access to the inner formula's negation)
+    if (current.kind === "not" && current.sub.kind === "next") {
       const negSub = Not(current.sub.sub);
       if (!result.has(negSub)) {
         worklist.push(negSub);
@@ -106,8 +113,8 @@ export function closure(f: Formula): FormulaSet {
 }
 
 /**
- * Compute the closure of a set of formulas (Definition 6, p.8).
- * cl(Δ) = ∪{cl(φ) | φ ∈ Δ}
+ * Compute the closure of a set of formulas.
+ * cl(Δ) = ∪{cl(ϕ) | ϕ ∈ Δ}
  */
 export function closureOfSet(fs: FormulaSet): FormulaSet {
   const result = new FormulaSet();
@@ -120,8 +127,8 @@ export function closureOfSet(fs: FormulaSet): FormulaSet {
 }
 
 /**
- * Compute the extended closure of a formula (Definition 15, p.17).
- * ecl(θ) = {φ, ¬φ | φ ∈ cl(θ)}
+ * Compute the extended closure of a formula (Definition 4.5, p.17).
+ * ecl(θ) = {ϕ, ¬ϕ | ϕ ∈ cl(θ)}
  */
 export function extendedClosure(f: Formula): FormulaSet {
   const cl = closure(f);
@@ -147,8 +154,8 @@ export function extendedClosureOfSet(fs: FormulaSet): FormulaSet {
 }
 
 /**
- * Check if a set of formulas is patently inconsistent (Definition 7, p.8).
- * A set is patently inconsistent if it contains both φ and ¬φ.
+ * Check if a set of formulas is patently inconsistent (Definition 4.3, p.16).
+ * A set is patently inconsistent if it contains both ϕ and ¬ϕ.
  */
 export function isPatentlyInconsistent(fs: FormulaSet): boolean {
   for (const f of fs) {
@@ -177,13 +184,18 @@ export function agentsInFormula(f: Formula): Set<Agent> {
         collect(g.left);
         collect(g.right);
         break;
-      case "D":
+      case "next":
         for (const a of g.coalition) result.add(a);
         collect(g.sub);
         break;
-      case "C":
+      case "always":
         for (const a of g.coalition) result.add(a);
         collect(g.sub);
+        break;
+      case "until":
+        for (const a of g.coalition) result.add(a);
+        collect(g.left);
+        collect(g.right);
         break;
     }
   }
@@ -205,10 +217,22 @@ export function agentsInFormulaSet(fs: FormulaSet): Set<Agent> {
 }
 
 /**
- * Check if a formula is an eventuality (¬C_A φ).
+ * Check if a formula is an eventuality.
+ *
+ * In ATL, the eventualities are:
+ * - ⟨⟨A⟩⟩(ϕ U ψ)  — needs ψ to eventually hold
+ * - ¬⟨⟨A⟩⟩□ϕ       — needs ¬ϕ to eventually hold
+ *
+ * These are the formulas that require realization checking (E3 elimination).
  */
 export function isEventuality(f: Formula): boolean {
-  return f.kind === "not" && f.sub.kind === "C";
+  // ⟨⟨A⟩⟩(ϕ U ψ) is an eventuality
+  if (f.kind === "until") return true;
+
+  // ¬⟨⟨A⟩⟩□ϕ is an eventuality
+  if (f.kind === "not" && f.sub.kind === "always") return true;
+
+  return false;
 }
 
 /**
@@ -219,35 +243,33 @@ export function getEventualities(fs: FormulaSet): Formula[] {
 }
 
 /**
- * Check if a formula has the form ¬D_A φ (a "diamond formula").
+ * Get the "goal" of an eventuality — the formula that must eventually hold.
+ * - ⟨⟨A⟩⟩(ϕ U ψ)  → ψ
+ * - ¬⟨⟨A⟩⟩□ϕ       → ¬ϕ
  */
-export function isDiamond(f: Formula): boolean {
-  return f.kind === "not" && f.sub.kind === "D";
+export function eventualityGoal(f: Formula): Formula {
+  if (f.kind === "until") return f.right;
+  if (f.kind === "not" && f.sub.kind === "always") return Not(f.sub.sub);
+  throw new Error("Not an eventuality");
 }
 
 /**
- * Check if a formula has the form D_A φ (a "box formula").
+ * Check if a formula is a positive next-time formula: ⟨⟨A⟩⟩○ϕ
  */
-export function isBox(f: Formula): boolean {
-  return f.kind === "D";
+export function isPositiveNext(f: Formula): boolean {
+  return f.kind === "next";
 }
 
 /**
- * Get all non-empty subsets of a coalition.
- * Used when we need to consider all sub-coalitions.
+ * Check if a formula is a negative next-time formula: ¬⟨⟨A⟩⟩○ϕ
  */
-export function coalitionSubsets(coalition: Coalition): Coalition[] {
-  const result: Coalition[] = [];
-  const n = coalition.length;
-  // Generate all non-empty subsets via bitmask
-  for (let mask = 1; mask < (1 << n); mask++) {
-    const subset: Agent[] = [];
-    for (let i = 0; i < n; i++) {
-      if (mask & (1 << i)) {
-        subset.push(coalition[i]!);
-      }
-    }
-    result.push(subset.sort());
-  }
-  return result;
+export function isNegativeNext(f: Formula): boolean {
+  return f.kind === "not" && f.sub.kind === "next";
+}
+
+/**
+ * Check if a formula is any next-time formula (positive or negative).
+ */
+export function isNextTime(f: Formula): boolean {
+  return isPositiveNext(f) || isNegativeNext(f);
 }

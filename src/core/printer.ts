@@ -1,14 +1,20 @@
 /**
- * Pretty-printer for CMAEL(CD) formulas.
- * Produces human-readable ASCII output.
+ * Pretty-printer for ATL formulas.
+ * Produces human-readable ASCII, Unicode, and LaTeX output.
  */
 
-import { type Formula, type FormulaSet } from "./types.ts";
+import { type Formula, type FormulaSet, type Coalition, type MoveVector } from "./types.ts";
 
 /**
- * Print a formula to a human-readable string.
- * Uses the same syntax accepted by the parser:
- *   ¬ → ~, ∧ → &, D_A → D{...}, C_A → C{...}
+ * Format a coalition for ASCII display.
+ */
+function coalitionStr(c: Coalition): string {
+  return `<<${c.join(",")}>>`;
+}
+
+/**
+ * Print a formula to a human-readable ASCII string.
+ * Uses the same syntax accepted by the parser.
  */
 export function printFormula(f: Formula): string {
   switch (f.kind) {
@@ -16,7 +22,6 @@ export function printFormula(f: Formula): string {
       return f.name;
 
     case "not":
-      // Check if it's ¬(φ ∧ ψ) — print as ~(φ & ψ)
       if (f.sub.kind === "and" || f.sub.kind === "not") {
         return `~(${printFormula(f.sub)})`;
       }
@@ -25,15 +30,14 @@ export function printFormula(f: Formula): string {
     case "and":
       return `(${printFormula(f.left)} & ${printFormula(f.right)})`;
 
-    case "D":
-      if (f.coalition.length === 1) {
-        // Individual knowledge: D{a} φ → Ka φ
-        return `K${f.coalition[0]} ${printFormulaWrapped(f.sub)}`;
-      }
-      return `D{${f.coalition.join(",")}} ${printFormulaWrapped(f.sub)}`;
+    case "next":
+      return `${coalitionStr(f.coalition)}X ${printFormulaWrapped(f.sub)}`;
 
-    case "C":
-      return `C{${f.coalition.join(",")}} ${printFormulaWrapped(f.sub)}`;
+    case "always":
+      return `${coalitionStr(f.coalition)}G ${printFormulaWrapped(f.sub)}`;
+
+    case "until":
+      return `${coalitionStr(f.coalition)}(${printFormula(f.left)} U ${printFormula(f.right)})`;
   }
 }
 
@@ -41,10 +45,17 @@ export function printFormula(f: Formula): string {
  * Print a formula, wrapping it in parens if it's compound.
  */
 function printFormulaWrapped(f: Formula): string {
-  if (f.kind === "and" || (f.kind === "not" && (f.sub.kind === "and"))) {
+  if (f.kind === "and" || (f.kind === "not" && f.sub.kind === "and")) {
     return `(${printFormula(f)})`;
   }
   return printFormula(f);
+}
+
+/**
+ * Format a coalition for Unicode display.
+ */
+function coalitionUnicode(c: Coalition): string {
+  return `\u27E8\u27E8${c.join(",")}\u27E9\u27E9`;
 }
 
 /**
@@ -53,6 +64,7 @@ function printFormulaWrapped(f: Formula): string {
 export function printFormulaUnicode(f: Formula): string {
   switch (f.kind) {
     case "atom":
+      if (f.name === "_top") return "\u22A4";
       return f.name;
 
     case "not":
@@ -64,19 +76,19 @@ export function printFormulaUnicode(f: Formula): string {
     case "and":
       return `(${printFormulaUnicode(f.left)} \u2227 ${printFormulaUnicode(f.right)})`;
 
-    case "D":
-      if (f.coalition.length === 1) {
-        return `K${f.coalition[0]} ${printFormulaUnicodeWrapped(f.sub)}`;
-      }
-      return `D{${f.coalition.join(",")}} ${printFormulaUnicodeWrapped(f.sub)}`;
+    case "next":
+      return `${coalitionUnicode(f.coalition)}\u25CB ${printFormulaUnicodeWrapped(f.sub)}`;
 
-    case "C":
-      return `C{${f.coalition.join(",")}} ${printFormulaUnicodeWrapped(f.sub)}`;
+    case "always":
+      return `${coalitionUnicode(f.coalition)}\u25A1 ${printFormulaUnicodeWrapped(f.sub)}`;
+
+    case "until":
+      return `${coalitionUnicode(f.coalition)}(${printFormulaUnicode(f.left)} \u0055 ${printFormulaUnicode(f.right)})`;
   }
 }
 
 function printFormulaUnicodeWrapped(f: Formula): string {
-  if (f.kind === "and" || (f.kind === "not" && (f.sub.kind === "and"))) {
+  if (f.kind === "and" || (f.kind === "not" && f.sub.kind === "and")) {
     return `(${printFormulaUnicode(f)})`;
   }
   return printFormulaUnicode(f);
@@ -98,13 +110,23 @@ export function printFormulaSetCompact(fs: FormulaSet): string {
   return `{${items.join(", ")}}`;
 }
 
+/**
+ * Print a move vector as a string like "(0,1,2)".
+ */
+export function printMoveVector(mv: MoveVector, agents?: Coalition): string {
+  if (agents && agents.length === mv.length) {
+    const parts = agents.map((a, i) => `${a}:${mv[i]}`);
+    return `(${parts.join(",")})`;
+  }
+  return `(${mv.join(",")})`;
+}
+
 // ============================================================
 // LaTeX output (for KaTeX rendering in browser)
 // ============================================================
 
 /**
  * Map nesting level to LaTeX sizing commands for parentheses.
- * Level 0 = innermost (plain parens), increasing = bigger.
  */
 const PAREN_SIZES = ["", "\\big", "\\Big", "\\bigg", "\\Bigg"];
 
@@ -132,39 +154,39 @@ function maxParenNesting(f: Formula): number {
       return maxParenNesting(f.sub);
     case "and":
       return 1 + Math.max(maxParenNesting(f.left), maxParenNesting(f.right));
-    case "D":
-    case "C": {
+    case "next":
+    case "always": {
       const sub = f.sub;
       if (sub.kind === "and" || (sub.kind === "not" && sub.sub.kind === "and")) {
         return 1 + maxParenNesting(sub);
       }
       return maxParenNesting(sub);
     }
+    case "until":
+      return 1 + Math.max(maxParenNesting(f.left), maxParenNesting(f.right));
   }
 }
 
 /**
+ * LaTeX coalition: \langle\langle a,b \rangle\rangle
+ */
+function coalitionLatex(c: Coalition): string {
+  const agents = c.length > 0 ? c.join(",") : "\\emptyset";
+  return `\\langle\\!\\langle ${agents} \\rangle\\!\\rangle`;
+}
+
+/**
  * Print a formula as a LaTeX string suitable for KaTeX rendering.
- * Uses explicit sizing commands (\big, \Big, etc.) so nested
- * parentheses are progressively larger.
  */
 export function printFormulaLatex(f: Formula): string {
   const total = maxParenNesting(f);
   return printLatex(f, total, 0);
 }
 
-/**
- * Recursive LaTeX printer.
- * @param f     - formula to print
- * @param total - total paren nesting depth of the whole formula
- * @param depth - current paren depth (0 = outermost)
- *
- * Size level for a paren at depth d = total - d - 1
- * (so outermost parens are biggest, innermost are plain).
- */
 function printLatex(f: Formula, total: number, depth: number): string {
   switch (f.kind) {
     case "atom":
+      if (f.name === "_top") return "\\top";
       return f.name;
 
     case "not":
@@ -179,14 +201,16 @@ function printLatex(f: Formula, total: number, depth: number): string {
       return `${sizedOpen(level)}${printLatex(f.left, total, depth + 1)} \\wedge ${printLatex(f.right, total, depth + 1)}${sizedClose(level)}`;
     }
 
-    case "D":
-      if (f.coalition.length === 1) {
-        return `\\mathbf{K}_{${f.coalition[0]}} ${printLatexWrapped(f.sub, total, depth)}`;
-      }
-      return `\\mathbf{D}_{\\{${f.coalition.join(",")}\\}} ${printLatexWrapped(f.sub, total, depth)}`;
+    case "next":
+      return `${coalitionLatex(f.coalition)}\\bigcirc ${printLatexWrapped(f.sub, total, depth)}`;
 
-    case "C":
-      return `\\mathbf{C}_{\\{${f.coalition.join(",")}\\}} ${printLatexWrapped(f.sub, total, depth)}`;
+    case "always":
+      return `${coalitionLatex(f.coalition)}\\square ${printLatexWrapped(f.sub, total, depth)}`;
+
+    case "until": {
+      const level = total - depth - 1;
+      return `${coalitionLatex(f.coalition)}${sizedOpen(level)}${printLatex(f.left, total, depth + 1)} \\,\\mathsf{U}\\, ${printLatex(f.right, total, depth + 1)}${sizedClose(level)}`;
+    }
   }
 }
 
@@ -204,4 +228,15 @@ function printLatexWrapped(f: Formula, total: number, depth: number): string {
 export function printFormulaSetLatex(fs: FormulaSet): string {
   const items = fs.toArray().map(printFormulaLatex);
   return `\\{${items.join(",\\; ")}\\}`;
+}
+
+/**
+ * Print a move vector as LaTeX.
+ */
+export function printMoveVectorLatex(mv: MoveVector, agents?: Coalition): string {
+  if (agents && agents.length === mv.length) {
+    const parts = agents.map((a, i) => `${a}\\!:\\!${mv[i]}`);
+    return `(${parts.join(",\\,")})`;
+  }
+  return `(${mv.join(",")})`;
 }

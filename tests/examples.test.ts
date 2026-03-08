@@ -203,8 +203,25 @@ describe("Implementation paper test formulas", () => {
     expect(isSat("<<a,b>>X p")).toBe(true);
   });
 
-  test("F14: (<<a>>X p & <<b>>X ~p) — SAT (different agents)", () => {
-    expect(isSat("(<<a>>X p & <<b>>X ~p)")).toBe(true);
+  test("F14: (<<a>>X p & <<b>>X ~p) — UNSAT (conflicting strategies)", () => {
+    // With agents {a, b}, <<a>>X p means "a can enforce p regardless of b's action"
+    // and <<b>>X ~p means "b can enforce ~p regardless of a's action".
+    // These conflict: the move vector where a votes for p AND b votes for ~p
+    // must lead to a state with both p and ~p (contradiction).
+    // Verified against TATL OCaml implementation.
+    expect(isSat("(<<a>>X p & <<b>>X ~p)")).toBe(false);
+  });
+
+  test("F14b: (<<a>>X p & <<a,b>>X ~p) — SAT", () => {
+    // <<a,b>>X ~p means the grand coalition can enforce ~p.
+    // This is compatible with <<a>>X p because the grand coalition
+    // includes a, so a's vote contributes to both.
+    expect(isSat("(<<a>>X p & <<a,b>>X ~p)")).toBe(true);
+  });
+
+  test("F14c: (<<a>>X p & <<b>>X p) — SAT", () => {
+    // Both agents can enforce p — compatible.
+    expect(isSat("(<<a>>X p & <<b>>X p)")).toBe(true);
   });
 
   // Group 6: Empty coalition
@@ -303,5 +320,97 @@ describe("Tableau structure", () => {
       const edge = result.finalTableau.edges[0]!;
       expect(Array.isArray(edge.label)).toBe(true);
     }
+  });
+});
+
+// ============================================================
+// Cross-validated against TATL OCaml implementation
+// All formulas below verified to match TATL results.
+// ============================================================
+
+describe("Multi-agent conflict (verified against TATL)", () => {
+  test("conflicting strategies with 2 agents are UNSAT", () => {
+    expect(isSat("(<<a>>X p & <<b>>X ~p)")).toBe(false);
+    expect(isSat("(<<a>>X (p & q) & <<b>>X ~p)")).toBe(false);
+    expect(isSat("(<<a>>G p & <<b>>X ~p)")).toBe(false);
+    expect(isSat("(<<a>>G p & <<b>>G ~p)")).toBe(false);
+  });
+
+  test("conflicting strategies with 3 agents are UNSAT", () => {
+    expect(isSat("(<<a>>X p & (<<b>>X q & <<c>>X ~p))")).toBe(false);
+    expect(isSat("(<<a,b>>X p & <<c>>X ~p)")).toBe(false);
+    expect(isSat("(<<a>>X p & <<b,c>>X ~p)")).toBe(false);
+  });
+
+  test("compatible multi-agent strategies are SAT", () => {
+    expect(isSat("(<<a>>X p & <<b>>X p)")).toBe(true);
+    expect(isSat("(<<a>>X p & <<a,b>>X ~p)")).toBe(true);
+    expect(isSat("(~<<a>>X p & <<b>>X p)")).toBe(true);
+    expect(isSat("(~<<a>>X p & ~<<b>>X p)")).toBe(true);
+    expect(isSat("(<<a>>G p & <<b>>X p)")).toBe(true);
+    expect(isSat("(<<a,b>>X p & ~<<a>>X p)")).toBe(true);
+  });
+
+  test("grand coalition formulas", () => {
+    expect(isSat("<<a,b>>X p")).toBe(true);
+    expect(isSat("<<a,b>>G p")).toBe(true);
+    expect(isSat("<<a,b>>X (p & q)")).toBe(true);
+    expect(isSat("<<a,b,c>>X p")).toBe(true);
+  });
+});
+
+describe("Eventualities (verified against TATL)", () => {
+  test("eventuality with contradictory strategy is SAT (different strategies)", () => {
+    // <<a>>G p and <<a>>F ~p describe different strategies — both can exist
+    expect(isSat("(<<a>>G p & <<a>>F ~p)")).toBe(true);
+    expect(isSat("(<<a>>G (p & q) & <<a>>F ~q)")).toBe(true);
+    expect(isSat("(<<a,b>>F p & <<a>>G ~p)")).toBe(true);
+  });
+
+  test("eventuality with immediately satisfied goal", () => {
+    expect(isSat("(<<a>>(p U q) & q)")).toBe(true);
+  });
+
+  test("eventuality with multi-agent Until", () => {
+    expect(isSat("(<<a>>(p U q) & <<a>>(q U p))")).toBe(true);
+    expect(isSat("(<<a,b>>(p U q) & (~q & ~p))")).toBe(false);
+  });
+
+  test("nested eventualities", () => {
+    expect(isSat("<<a>>F <<a>>F p")).toBe(true);
+    expect(isSat("<<a>>(p U <<a>>X q)")).toBe(true);
+  });
+
+  test("negated always (is an eventuality)", () => {
+    expect(isSat("(~<<a>>G p & p)")).toBe(true);
+    expect(isSat("(~<<a>>G p & <<a>>G p)")).toBe(false);
+    expect(isSat("~<<a>>G (p & ~p)")).toBe(true);
+  });
+
+  test("empty coalition eventualities", () => {
+    expect(isSat("(<<>>F p & <<>>G ~p)")).toBe(false);
+    expect(isSat("(<<>>(p U q) & (~q & ~p))")).toBe(false);
+    expect(isSat("~<<>>G p")).toBe(true);
+  });
+
+  test("self-contradictory temporal formulas", () => {
+    expect(isSat("(<<a>>G p & ~<<a>>G p)")).toBe(false);
+    expect(isSat("(<<a>>F p & ~<<a>>F p)")).toBe(false);
+    expect(isSat("(<<a>>(p U q) & ~<<a>>(p U q))")).toBe(false);
+  });
+
+  test("multiple eventualities", () => {
+    expect(isSat("(<<a>>F p & <<a>>F q)")).toBe(true);
+    expect(isSat("(<<a>>F p & <<b>>F ~p)")).toBe(true);
+  });
+});
+
+describe("Purely propositional (verified against TATL)", () => {
+  test("propositional tautologies and contradictions", () => {
+    expect(isSat("p")).toBe(true);
+    expect(isSat("~p")).toBe(true);
+    expect(isSat("(p & ~p)")).toBe(false);
+    expect(isSat("(p & q)")).toBe(true);
+    expect(isSat("(p | ~p)")).toBe(true);
   });
 });

@@ -309,9 +309,6 @@ function applyNextRule(
     // (Actually, in the paper, only the inner formulas of next-time formulas go to successor)
     // The successor prestate is exactly the set computed above.
 
-    // Skip empty successors (they would just create trivially satisfiable states)
-    if (successorFormulas.size === 0) continue;
-
     // Check for reuse
     const key = successorFormulas.key();
     let psId: NodeId;
@@ -591,15 +588,16 @@ function collectAllEventualities(states: Map<NodeId, State>): Formula[] {
 /**
  * Rule (E2) — eliminate states where some move vector has no surviving successor.
  *
- * For each state Δ that has next-time formulas, check:
- * - For every move vector σ in the state's successor edges,
- *   there must be at least one surviving target state.
+ * Definition 4.9 from the paper (p.19-20):
+ * Eliminate state Δ if there exists a move vector σ ∈ {0,...,k-1}^|Σ|
+ * such that Δ has no σ-successor in the tableau.
  *
- * If Δ has a positive next-time formula ⟨⟨A⟩⟩○ϕ, then the coalition A
- * needs at least one move vector in D(Δ, ⟨⟨A⟩⟩○ϕ) that leads to a
- * surviving successor. If no such vector exists, eliminate Δ.
+ * In other words: EVERY move vector that should exist from this state
+ * must have at least one surviving successor. If any move vector's
+ * successors have all been eliminated, the state itself is eliminated.
  *
- * Similarly for negative next-time formulas.
+ * The required move vectors for a state are ALL vectors in {0,...,k-1}^n
+ * where k = max(m+l, 1), m = # positive next-time formulas, l = # negative.
  */
 function applyE2(
   states: Map<NodeId, State>,
@@ -611,40 +609,45 @@ function applyE2(
 
   while (changed) {
     changed = false;
-    const toRemove: { id: NodeId; formula: Formula }[] = [];
+    const toRemove: { id: NodeId; sigma: MoveVector }[] = [];
 
     for (const [id, state] of states) {
-      // Check each positive next-time formula: ⟨⟨A⟩⟩○ϕ
+      // Count next-time formulas in this state
+      let m = 0; // positive next-time formulas
+      let l = 0; // negative next-time formulas
       for (const f of state.formulas) {
-        if (isPositiveNext(f) && f.kind === "next") {
-          // Check if there's ANY surviving successor edge
-          const hasSuccessor = edges.some(
-            (e) => e.from === id && states.has(e.to)
-          );
-          if (!hasSuccessor) {
-            toRemove.push({ id, formula: f });
-            break;
-          }
-        }
-        if (isNegativeNext(f) && f.kind === "not" && f.sub.kind === "next") {
-          const hasSuccessor = edges.some(
-            (e) => e.from === id && states.has(e.to)
-          );
-          if (!hasSuccessor) {
-            toRemove.push({ id, formula: f });
-            break;
-          }
+        if (isPositiveNext(f)) m++;
+        else if (isNegativeNext(f)) l++;
+      }
+
+      if (m === 0 && l === 0) continue; // No next-time formulas, no E2 check needed
+
+      const k = m + l;
+      const n = allAgents.length;
+      const requiredMoveVectors = generateMoveVectors(n, k);
+
+      // For each required move vector, check if there's a surviving successor
+      for (const sigma of requiredMoveVectors) {
+        const sigmaKey = sigma.join(",");
+        const hasSurvivor = edges.some((e) => {
+          if (e.from !== id) return false;
+          if (!states.has(e.to)) return false;
+          return e.label.join(",") === sigmaKey;
+        });
+        if (!hasSurvivor) {
+          toRemove.push({ id, sigma });
+          break; // One missing move vector is enough to eliminate
         }
       }
     }
 
-    for (const { id, formula } of toRemove) {
+    for (const { id, sigma } of toRemove) {
       if (!states.has(id)) continue;
       const state = states.get(id)!;
       records.push({
         stateId: id,
         rule: "E2",
-        formula,
+        formula: state.formulas.toArray()[0]!, // Representative formula
         stateFormulas: state.formulas.clone(),
       });
       states.delete(id);

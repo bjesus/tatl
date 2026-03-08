@@ -155,10 +155,15 @@ export function extendedClosureOfSet(fs: FormulaSet): FormulaSet {
 
 /**
  * Check if a set of formulas is patently inconsistent (Definition 4.3, p.16).
- * A set is patently inconsistent if it contains both ϕ and ¬ϕ.
+ * A set is patently inconsistent if it contains both ϕ and ¬ϕ,
+ * or if it contains ~_top (since _top is our tautology constant).
  */
 export function isPatentlyInconsistent(fs: FormulaSet): boolean {
   for (const f of fs) {
+    // ~_top is always inconsistent: _top is the tautology constant
+    if (f.kind === "not" && f.sub.kind === "atom" && f.sub.name === "_top") {
+      return true;
+    }
     if (f.kind === "not") {
       if (fs.has(f.sub)) return true;
     } else {

@@ -1,0 +1,19 @@
+{
+  "name": "cmael-tableau",
+  "version": "1.0.0",
+  "module": "src/index.ts",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "start": "bun run src/index.ts",
+    "test": "bun test",
+    "build:cli": "bun build --compile src/index.ts --outfile cmael",
+    "build:web": "bun run src/build-html.ts"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  }
+}

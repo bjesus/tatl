@@ -246,6 +246,7 @@ export interface SolidEdge {
   readonly from: NodeId;
   readonly to: NodeId;
   readonly label: MoveVector; // the move vector that triggered this edge
+  readonly viaPrestate?: NodeId; // prestate this edge passed through (set after prestate elimination)
 }
 
 export interface Pretableau {

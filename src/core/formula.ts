@@ -254,6 +254,37 @@ export function eventualityGoal(f: Formula): Formula {
 }
 
 /**
+ * Get the coalition associated with an eventuality.
+ * - ⟨⟨A⟩⟩(ϕ U ψ)  → A
+ * - ¬⟨⟨A⟩⟩□ϕ       → A
+ */
+export function eventualityCoalition(f: Formula): Coalition {
+  if (f.kind === "until") return f.coalition;
+  if (f.kind === "not" && f.sub.kind === "always") return f.sub.coalition;
+  throw new Error("Not an eventuality");
+}
+
+/**
+ * Get the next-time formula that the eventuality unfolds into.
+ * This is the formula whose D-set determines which edges the
+ * eventuality realization can follow.
+ *
+ * - ⟨⟨A⟩⟩(ϕ U ψ) unfolds into ⟨⟨A⟩⟩○⟨⟨A⟩⟩(ϕ U ψ) (positive)
+ * - ¬⟨⟨A⟩⟩□ϕ unfolds into ¬⟨⟨A⟩⟩○⟨⟨A⟩⟩□ϕ (negative)
+ */
+export function eventualityNextFormula(f: Formula): Formula {
+  if (f.kind === "until") {
+    // ⟨⟨A⟩⟩(ϕ U ψ) → ⟨⟨A⟩⟩○⟨⟨A⟩⟩(ϕ U ψ)
+    return Next(f.coalition, f);
+  }
+  if (f.kind === "not" && f.sub.kind === "always") {
+    // ¬⟨⟨A⟩⟩□ϕ → ¬⟨⟨A⟩⟩○⟨⟨A⟩⟩□ϕ
+    return Not(Next(f.sub.coalition, f.sub));
+  }
+  throw new Error("Not an eventuality");
+}
+
+/**
  * Check if a formula is a positive next-time formula: ⟨⟨A⟩⟩○ϕ
  */
 export function isPositiveNext(f: Formula): boolean {

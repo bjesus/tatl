@@ -11,7 +11,7 @@ Available as both a **command-line tool** and a **web interface**.
 > **Tableau-based decision procedure for full coalitional multiagent temporal logic**
 > Valentin Goranko and Dmitry Shkatov (2009)
 
-The implementation faithfully follows the paper's three-phase tableau algorithm with move vectors for the Next rule. Results have been cross-validated against the TATL OCaml reference implementation (59 formulas, all matching).
+The implementation faithfully follows the paper's three-phase tableau algorithm with move vectors for the Next rule. Results have been cross-validated against the TATL OCaml reference implementation (all 42 test formulas from the David 2013 paper matching, plus additional formulas — 121 tests total).
 
 ## Formula syntax
 
@@ -52,7 +52,7 @@ bun install
 bun test
 ```
 
-107 tests across 2 test files, cross-validated against the TATL OCaml implementation.
+121 tests across 2 test files, cross-validated against the TATL OCaml implementation.
 
 ## Web interface
 

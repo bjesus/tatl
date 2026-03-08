@@ -42,6 +42,8 @@ import {
   isPatentlyInconsistent,
   isEventuality,
   eventualityGoal,
+  eventualityCoalition,
+  eventualityNextFormula,
   isPositiveNext,
   isNegativeNext,
   isNextTime,
@@ -236,26 +238,47 @@ function applyNextRule(
   state: State,
   allAgents: Coalition
 ): NodeId[] {
-  // Collect next-time formulas
-  const positiveNexts: Formula[] = []; // ⟨⟨A⟩⟩○ϕ
-  const negativeNexts: Formula[] = []; // ¬⟨⟨A⟩⟩○ψ
+  // Classify next-time formulas into three categories (matching TATL):
+  //
+  // 1. Enforceable (positive): ⟨⟨A⟩⟩○ϕ — indexed 0..m-1
+  //    Fires when ALL agents in A play the formula's index.
+  //
+  // 2. Proper unavoidable (negative): ¬⟨⟨A⟩⟩○ψ where A ≠ Σ — indexed 0..l-1
+  //    Fires when Co(σ) = index AND Σ\A ⊆ N(σ).
+  //
+  // 3. Agents unavoidable: ¬⟨⟨Σ⟩⟩○ψ where A = Σ (all agents) — NOT indexed
+  //    Inner formula ¬ψ is ALWAYS included in every successor unconditionally.
+  //    These do NOT contribute to move vector dimensionality.
+
+  const enforceable: Formula[] = [];         // ⟨⟨A⟩⟩○ϕ
+  const properUnavoidable: Formula[] = [];   // ¬⟨⟨A⟩⟩○ψ where A ≠ Σ
+  const agentsUnavoidable: Formula[] = [];   // ¬⟨⟨Σ⟩⟩○ψ where A = Σ
 
   for (const f of state.formulas) {
     if (isPositiveNext(f)) {
-      positiveNexts.push(f);
+      enforceable.push(f);
     } else if (isNegativeNext(f)) {
-      negativeNexts.push(f);
+      // Distinguish proper unavoidable vs agents unavoidable
+      if (f.kind === "not" && f.sub.kind === "next") {
+        if (coalitionEqual(
+          normalizeCoalition([...f.sub.coalition]),
+          allAgents
+        )) {
+          agentsUnavoidable.push(f);
+        } else {
+          properUnavoidable.push(f);
+        }
+      }
     }
   }
 
-  const m = positiveNexts.length; // # positive next-time formulas
-  const l = negativeNexts.length; // # negative next-time formulas
+  const m = enforceable.length;
+  const l = properUnavoidable.length;
 
-  // If no next-time formulas, add a default successor with just Top
-  // (matching TATL: synthetic Coal(ag_all, Next(Top)))
-  if (m === 0 && l === 0) {
+  // If no next-time formulas at all (including agents unavoidable),
+  // add a default successor with empty set
+  if (m === 0 && l === 0 && agentsUnavoidable.length === 0) {
     const successorFormulas = new FormulaSet();
-    // Empty prestate — will get expanded
     const key = successorFormulas.key();
     let psId: NodeId;
     if (prestateIndex.has(key)) {
@@ -271,8 +294,8 @@ function applyNextRule(
     return prestateIndex.has(key) ? [] : [psId];
   }
 
-  const k = m + l; // Total number of moves per agent
-  const n = allAgents.length; // Number of agents
+  const k = Math.max(m + l, 1); // Total moves per agent (at least 1)
+  const n = allAgents.length;
 
   // Generate all move vectors σ ∈ {0,...,k-1}^n
   const moveVectors = generateMoveVectors(n, k);
@@ -280,24 +303,22 @@ function applyNextRule(
   const newPrestateIds: NodeId[] = [];
 
   for (const sigma of moveVectors) {
-    // Compute the successor prestate content for this move vector
     const successorFormulas = new FormulaSet();
 
-    // For each positive next-time formula ⟨⟨A⟩⟩○ϕ:
-    // Include ϕ if σ ∈ D(Δ, ⟨⟨A⟩⟩○ϕ)
-    // D(Δ, ⟨⟨A⟩⟩○ϕ) = set of move vectors where all agents in A vote for this formula
-    for (let i = 0; i < positiveNexts.length; i++) {
-      const f = positiveNexts[i]!;
+    // Part 1: Enforceable formulas — ⟨⟨A⟩⟩○ϕ at index i
+    // Include ϕ if ALL agents in A play i
+    for (let i = 0; i < enforceable.length; i++) {
+      const f = enforceable[i]!;
       if (f.kind !== "next") continue;
       if (inD_positive(sigma, f.coalition, i, allAgents, m)) {
         successorFormulas.add(f.sub);
       }
     }
 
-    // For each negative next-time formula ¬⟨⟨A⟩⟩○ψ:
-    // Include ¬ψ if σ ∈ D(Δ, ¬⟨⟨A⟩⟩○ψ)
-    for (let j = 0; j < negativeNexts.length; j++) {
-      const f = negativeNexts[j]!;
+    // Part 2: Proper unavoidable formulas — ¬⟨⟨A⟩⟩○ψ where A ≠ Σ at index j
+    // Include ¬ψ if Co(σ) = j AND Σ\A ⊆ N(σ)
+    for (let j = 0; j < properUnavoidable.length; j++) {
+      const f = properUnavoidable[j]!;
       if (f.kind !== "not" || f.sub.kind !== "next") continue;
       const A = f.sub.coalition;
       if (inD_negative(sigma, A, j, allAgents, m, l)) {
@@ -305,9 +326,12 @@ function applyNextRule(
       }
     }
 
-    // Add non-next-time formulas that should propagate
-    // (Actually, in the paper, only the inner formulas of next-time formulas go to successor)
-    // The successor prestate is exactly the set computed above.
+    // Part 3: Agents unavoidable formulas — ¬⟨⟨Σ⟩⟩○ψ
+    // ALWAYS include ¬ψ unconditionally in every successor
+    for (const f of agentsUnavoidable) {
+      if (f.kind !== "not" || f.sub.kind !== "next") continue;
+      successorFormulas.add(Not(f.sub.sub));
+    }
 
     // Check for reuse
     const key = successorFormulas.key();
@@ -481,6 +505,8 @@ function prestateEliminationPhase(pretableau: Pretableau, allAgents: Coalition):
   }
 
   // For each solid edge Δ →[σ] Γ, replace with Δ →[σ] Δ' for each Δ' ∈ states(Γ)
+  // Preserve viaPrestate so E3 can group edges by the prestate they passed through.
+  // This is needed for the ∀-prestates, ∃-states pattern in eventuality realization.
   for (const edge of pretableau.solidEdges) {
     const targetStates = prestateToStates.get(edge.to);
     if (targetStates) {
@@ -489,6 +515,7 @@ function prestateEliminationPhase(pretableau: Pretableau, allAgents: Coalition):
           from: edge.from,
           to: stateId,
           label: edge.label,
+          viaPrestate: edge.to,
         });
       }
     }
@@ -612,17 +639,26 @@ function applyE2(
     const toRemove: { id: NodeId; sigma: MoveVector }[] = [];
 
     for (const [id, state] of states) {
-      // Count next-time formulas in this state
-      let m = 0; // positive next-time formulas
-      let l = 0; // negative next-time formulas
+      // Count next-time formulas using three-category classification
+      let m = 0; // enforceable (positive) next-time formulas
+      let l = 0; // proper unavoidable (negative, coalition ≠ Σ)
+      let agentsCount = 0; // agents unavoidable (negative, coalition = Σ)
       for (const f of state.formulas) {
-        if (isPositiveNext(f)) m++;
-        else if (isNegativeNext(f)) l++;
+        if (isPositiveNext(f)) {
+          m++;
+        } else if (isNegativeNext(f)) {
+          if (f.kind === "not" && f.sub.kind === "next" &&
+              coalitionEqual(normalizeCoalition([...f.sub.coalition]), allAgents)) {
+            agentsCount++;
+          } else {
+            l++;
+          }
+        }
       }
 
-      if (m === 0 && l === 0) continue; // No next-time formulas, no E2 check needed
+      if (m === 0 && l === 0 && agentsCount === 0) continue; // No next-time formulas
 
-      const k = m + l;
+      const k = Math.max(m + l, 1);
       const n = allAgents.length;
       const requiredMoveVectors = generateMoveVectors(n, k);
 
@@ -665,15 +701,22 @@ function applyE2(
  * - ⟨⟨A⟩⟩(ϕ U ψ): needs ψ to eventually hold along a strategic path
  * - ¬⟨⟨A⟩⟩□ϕ: needs ¬ϕ to eventually hold along a strategic path
  *
- * Marking procedure (adapted from the paper, p.20-21):
- * 1. Mark all states where the eventuality's goal is immediately realized
- *    (the goal formula is already in the state)
- * 2. Fixpoint: mark state Δ if it contains the eventuality and has a
- *    successor Δ' (via some edge) that is marked.
- * 3. Eliminate all unmarked states containing the eventuality.
+ * CRITICAL: The marking procedure must only follow edges that are
+ * consistent with the eventuality's coalition strategy. Specifically:
  *
- * The marking checks that the eventuality can be realized through
- * some path of successor states.
+ * For eventuality ⟨⟨A⟩⟩(ϕ U ψ), which unfolds to ⟨⟨A⟩⟩○⟨⟨A⟩⟩(ϕ U ψ),
+ * we can only follow edges whose move vector σ ∈ D(Δ, ⟨⟨A⟩⟩○⟨⟨A⟩⟩(ϕ U ψ)).
+ *
+ * For eventuality ¬⟨⟨A⟩⟩□ϕ, which unfolds to ¬⟨⟨A⟩⟩○⟨⟨A⟩⟩□ϕ,
+ * we can only follow edges whose move vector σ ∈ D(Δ, ¬⟨⟨A⟩⟩○⟨⟨A⟩⟩□ϕ).
+ *
+ * This matches the TATL OCaml implementation (verif_edge / get_succ_to_be_verified_simpl).
+ *
+ * Marking procedure:
+ * 1. Mark all states where the eventuality's goal is immediately realized
+ * 2. Fixpoint: mark state Δ if it contains the eventuality and has a
+ *    coalition-consistent edge to a marked successor
+ * 3. Eliminate all unmarked states containing the eventuality
  */
 function applyE3(
   states: Map<NodeId, State>,
@@ -682,6 +725,7 @@ function applyE3(
   allAgents: Coalition
 ): EliminationRecord[] {
   const goal = eventualityGoal(eventuality);
+  const nextFormula = eventualityNextFormula(eventuality);
 
   // Find all states containing this eventuality
   const statesWithEventuality = new Set<NodeId>();
@@ -694,6 +738,16 @@ function applyE3(
   if (statesWithEventuality.size === 0) return [];
 
   // Marking procedure
+  //
+  // CRITICAL: Uses the ∀-prestates, ∃-states pattern from TATL.
+  //
+  // After prestate elimination, edges carry viaPrestate info. Two edges from
+  // state S with the same viaPrestate correspond to different states expanded
+  // from the same prestate. These are alternatives (∃: at least one must work).
+  // But different prestates represent different strategic outcomes (∀: all must work).
+  //
+  // So to mark state S: for EACH consistent prestate P reachable from S,
+  // there must exist at least one edge S→[σ]→S' via P where S' is marked.
   const marked = new Set<NodeId>();
 
   // Step 1: Mark all states containing the goal
@@ -703,7 +757,7 @@ function applyE3(
     }
   }
 
-  // Step 2: Fixpoint marking
+  // Step 2: Fixpoint marking — ∀-prestates, ∃-states
   let fixpointChanged = true;
   while (fixpointChanged) {
     fixpointChanged = false;
@@ -711,16 +765,45 @@ function applyE3(
       if (marked.has(id)) continue;
       if (!states.has(id)) continue;
 
-      // Check if there's an edge to a marked successor state
+      const state = states.get(id)!;
+
+      // Find the index of the next-time formula in this state's next-time formulas.
+      const nextFormulaIndex = findNextFormulaIndex(state, nextFormula, allAgents);
+      if (nextFormulaIndex === null) continue;
+
+      // Collect all coalition-consistent edges from this state, grouped by viaPrestate.
+      // Each group represents a prestate — ALL groups must have at least one marked successor.
+      const prestateGroups = new Map<string, SolidEdge[]>();
+
       for (const edge of edges) {
         if (edge.from !== id) continue;
         if (!states.has(edge.to)) continue;
-        if (!marked.has(edge.to)) continue;
 
-        // Found a path to a marked state — mark this one too
+        if (isEdgeConsistentWithEventuality(edge.label, nextFormula, nextFormulaIndex, state, allAgents)) {
+          const groupKey = edge.viaPrestate ?? edge.to; // fallback to edge.to if no prestate info
+          if (!prestateGroups.has(groupKey)) {
+            prestateGroups.set(groupKey, []);
+          }
+          prestateGroups.get(groupKey)!.push(edge);
+        }
+      }
+
+      // If no consistent edges at all, can't mark
+      if (prestateGroups.size === 0) continue;
+
+      // ALL prestate groups must have at least one marked successor
+      let allGroupsSatisfied = true;
+      for (const [, groupEdges] of prestateGroups) {
+        const groupHasMarked = groupEdges.some(e => marked.has(e.to));
+        if (!groupHasMarked) {
+          allGroupsSatisfied = false;
+          break;
+        }
+      }
+
+      if (allGroupsSatisfied) {
         marked.add(id);
         fixpointChanged = true;
-        break;
       }
     }
   }
@@ -741,4 +824,89 @@ function applyE3(
   }
 
   return records;
+}
+
+/**
+ * Find the index of a next-time formula among a state's next-time formulas,
+ * using the three-category classification.
+ *
+ * Returns { type, index } or null if not found.
+ * - "positive": enforceable, indexed among enforceable formulas
+ * - "negative": proper unavoidable (coalition ≠ Σ), indexed among proper unavoidable
+ * - "agents": agents unavoidable (coalition = Σ), always fires — no index needed
+ */
+function findNextFormulaIndex(
+  state: State,
+  nextFormula: Formula,
+  allAgents: Coalition
+): { type: "positive" | "negative" | "agents"; index: number } | null {
+  let posIdx = 0;
+  let negIdx = 0;
+
+  for (const f of state.formulas) {
+    if (isPositiveNext(f)) {
+      if (formulaEqual(f, nextFormula)) {
+        return { type: "positive", index: posIdx };
+      }
+      posIdx++;
+    } else if (isNegativeNext(f)) {
+      const isAgentsUnavoidable = f.kind === "not" && f.sub.kind === "next" &&
+        coalitionEqual(normalizeCoalition([...f.sub.coalition]), allAgents);
+      if (formulaEqual(f, nextFormula)) {
+        if (isAgentsUnavoidable) {
+          return { type: "agents", index: 0 };
+        }
+        return { type: "negative", index: negIdx };
+      }
+      if (!isAgentsUnavoidable) {
+        negIdx++;
+      }
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Check if an edge's move vector is consistent with an eventuality's coalition strategy.
+ *
+ * For a positive next-time formula ⟨⟨A⟩⟩○ϕ at index i:
+ *   All agents in A must play i (vote for this formula).
+ *
+ * For a negative next-time formula ¬⟨⟨A'⟩⟩○ψ at index j:
+ *   neg(σ) = j AND Σ\A' ⊆ N(σ)
+ */
+function isEdgeConsistentWithEventuality(
+  sigma: MoveVector,
+  nextFormula: Formula,
+  nextFormulaIndex: { type: "positive" | "negative" | "agents"; index: number },
+  state: State,
+  allAgents: Coalition
+): boolean {
+  // Agents unavoidable: always fires — all edges are consistent
+  if (nextFormulaIndex.type === "agents") {
+    return true;
+  }
+
+  // Count enforceable / proper unavoidable next-time formulas (three-category)
+  let m = 0;
+  let l = 0;
+  for (const f of state.formulas) {
+    if (isPositiveNext(f)) {
+      m++;
+    } else if (isNegativeNext(f)) {
+      const isAgentsUnav = f.kind === "not" && f.sub.kind === "next" &&
+        coalitionEqual(normalizeCoalition([...f.sub.coalition]), allAgents);
+      if (!isAgentsUnav) l++;
+    }
+  }
+
+  if (nextFormulaIndex.type === "positive") {
+    if (nextFormula.kind !== "next") return false;
+    return inD_positive(sigma, nextFormula.coalition, nextFormulaIndex.index, allAgents, m);
+  } else {
+    if (nextFormula.kind !== "not" || nextFormula.sub.kind !== "next") return false;
+    const A = nextFormula.sub.coalition;
+    return inD_negative(sigma, A, nextFormulaIndex.index, allAgents, m, l);
+  }
 }

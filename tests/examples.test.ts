@@ -262,6 +262,80 @@ describe("Implementation paper test formulas", () => {
   test("F21: (<<a>>X p -> <<a>>X q) — SAT", () => {
     expect(isSat("(<<a>>X p -> <<a>>X q)")).toBe(true);
   });
+
+  // Group 9: Same-agent interactions
+  test("F22: (<<a>>G p & <<a>>G ~p) — UNSAT", () => {
+    expect(isSat("(<<a>>G p & <<a>>G ~p)")).toBe(false);
+  });
+
+  test("F23: (<<a>>G p & <<a,b>>G ~p) — UNSAT", () => {
+    expect(isSat("(<<a>>G p & <<a,b>>G ~p)")).toBe(false);
+  });
+
+  test("F24: (<<a>>X p & <<b>>X ~p & <<a,b>>X p) — UNSAT", () => {
+    expect(isSat("(<<a>>X p & (<<b>>X ~p & <<a,b>>X p))")).toBe(false);
+  });
+
+  // Group 10: Cross-agent temporal interactions
+  test("F25: (<<a>>G p & <<b>>F ~p) — UNSAT", () => {
+    // Agent a enforces p forever; agent b (opposing) can enforce eventually ~p.
+    // With 2 agents, b is the complement of a's coalition in many move vectors.
+    expect(isSat("(<<a>>G p & <<b>>F ~p)")).toBe(false);
+  });
+
+  test("F26: (<<a>>G p & <<a,b>>F ~p) — SAT", () => {
+    // Grand coalition can eventually enforce ~p even while a alone enforces G p
+    // (different strategies — <<a,b>>F ~p requires cooperation including a)
+    expect(isSat("(<<a>>G p & <<a,b>>F ~p)")).toBe(true);
+  });
+
+  // Group 11: Until with Always interactions
+  test("F27: (<<a>>(p U q) & <<a>>G ~q) — SAT", () => {
+    // Same coalition — describes different strategies
+    expect(isSat("(<<a>>(p U q) & <<a>>G ~q)")).toBe(true);
+  });
+
+  test("F28: (<<a>>(p U q) & <<a,b>>G ~q) — SAT", () => {
+    expect(isSat("(<<a>>(p U q) & <<a,b>>G ~q)")).toBe(true);
+  });
+
+  // Group 12: Subset monotonicity tests with Next
+  test("F29: (<<a>>X p & ~<<a,b>>X p) — UNSAT", () => {
+    // If a alone can enforce X p, then {a,b} can too (superset coalition)
+    expect(isSat("(<<a>>X p & ~<<a,b>>X p)")).toBe(false);
+  });
+
+  // Group 13: Subset monotonicity tests with Always
+  test("F30: (<<a>>G p & ~<<a,b>>G p) — UNSAT", () => {
+    expect(isSat("(<<a>>G p & ~<<a,b>>G p)")).toBe(false);
+  });
+
+  // Group 14: Cross-agent Until / Always conflicts
+  test("F31: (<<a>>G ~q & <<b>>(p U q)) — UNSAT", () => {
+    // Agent a enforces ~q forever; agent b must eventually reach q.
+    // With 2 agents, these strategies conflict.
+    expect(isSat("(<<a>>G ~q & <<b>>(p U q))")).toBe(false);
+  });
+
+  test("F32: (<<a>>G p & <<b>>(p U q)) — SAT", () => {
+    // a enforces p forever; b enforces p until q. Compatible since
+    // both maintain p, and b can choose when to reach q.
+    expect(isSat("(<<a>>G p & <<b>>(p U q))")).toBe(true);
+  });
+
+  test("F33: (<<a>>G p & <<a,b>>(p U q)) — SAT", () => {
+    expect(isSat("(<<a>>G p & <<a,b>>(p U q))")).toBe(true);
+  });
+
+  // Group 15: Subset monotonicity with Until
+  test("F34: (<<a>>(p U q) & ~<<a,b>>(p U q)) — UNSAT", () => {
+    expect(isSat("(<<a>>(p U q) & ~<<a,b>>(p U q))")).toBe(false);
+  });
+
+  test("F35: (<<a,b>>(p U q) & ~<<a>>(p U q)) — SAT", () => {
+    // Grand coalition can enforce until even if a alone can't
+    expect(isSat("(<<a,b>>(p U q) & ~<<a>>(p U q))")).toBe(true);
+  });
 });
 
 // ============================================================

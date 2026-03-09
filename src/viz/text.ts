@@ -7,14 +7,13 @@ import {
   type Pretableau,
   type Tableau,
   type TableauResult,
-  type Formula,
-  type FormulaSet,
+  type StateFormula,
+  type StateFormulaSet,
   type Coalition,
   type MoveVector,
   type SolidEdge,
 } from "../core/types.ts";
 import { printFormula, printFormulaSet, printFormulaUnicode, printMoveVector } from "../core/printer.ts";
-import { agentsInFormula } from "../core/formula.ts";
 
 /**
  * Generate a complete text summary of a tableau result.
@@ -131,21 +130,21 @@ export interface DotOptions {
 /**
  * Format a formula set for DOT tooltip (one formula per line, Unicode).
  */
-function formulaSetTooltip(fs: FormulaSet): string {
+function formulaSetTooltip(fs: StateFormulaSet): string {
   return fs.toArray().map(printFormulaUnicode).join("\n");
 }
 
 /**
  * Generate a compact label: state ID + formula count.
  */
-function compactLabel(id: string, fs: FormulaSet): string {
+function compactLabel(id: string, fs: StateFormulaSet): string {
   return `${id}\n(${fs.size} formulas)`;
 }
 
 /**
  * Generate a detailed label: state ID + all formulas.
  */
-function detailedLabel(id: string, fs: FormulaSet): string {
+function detailedLabel(id: string, fs: StateFormulaSet): string {
   const formulas = fs.toArray().map(printFormulaUnicode);
   return id + "\n" + "\u2500".repeat(Math.min(id.length + 6, 20)) + "\n" + formulas.join("\n");
 }
@@ -153,7 +152,7 @@ function detailedLabel(id: string, fs: FormulaSet): string {
 /**
  * Build a node label based on options.
  */
-function nodeLabel(id: string, fs: FormulaSet, detailed: boolean): string {
+function nodeLabel(id: string, fs: StateFormulaSet, detailed: boolean): string {
   return detailed ? detailedLabel(id, fs) : compactLabel(id, fs);
 }
 

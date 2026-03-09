@@ -1,22 +1,25 @@
 /**
- * Main tableau procedure for ATL satisfiability checking.
+ * Main tableau procedure for ATL* satisfiability checking.
  *
  * Three phases:
  * 1. Construction phase: Build pretableau using rules (SR) and (Next)
  * 2. Prestate elimination phase: Remove prestates to get initial tableau
- * 3. State elimination phase: Remove bad states (E1: inconsistency/no states,
- *    E2: missing successors, E3: unrealized eventualities)
+ * 3. State elimination phase: Remove bad states (E2: missing successors,
+ *    E3: unrealized eventualities via whatfalse residuals)
  *
  * References:
- * - Goranko & Shkatov 2009, Section 4 (pp.14-24)
- * - Rule (SR) p.18, Rule (Next) p.18-19
- * - Rule (E1) p.20, Rule (E2) p.20, Rule (E3) p.20-21
- * - Definition 4.6 (eventuality realization) p.20
+ * - Goranko & Shkatov 2009: ATL tableau (Section 4)
+ * - Cerrito, David & Goranko 2014: ATL+ extension
+ * - David 2015: Full ATL* extension
+ * - TATL OCaml: vertex_state.ml, construction.ml, elimination_star.ml
  */
 
 import {
-  type Formula,
+  type StateFormula,
+  type PathFormula,
   type Coalition,
+  type Agent,
+  type FormulaTuple,
   type MoveVector,
   type NodeId,
   type PreState,
@@ -27,30 +30,36 @@ import {
   type Tableau,
   type TableauResult,
   type EliminationRecord,
-  FormulaSet,
-  Not,
-  Next,
-  formulaKey,
-  formulaEqual,
-  coalitionSubset,
+  STop,
+  Coal,
+  CoCoal,
+  PNext,
+  PState,
+  StateFormulaSet,
+  PathFormulaSet,
+  stateKey,
+  pathKey,
   coalitionEqual,
-  coalitionComplement,
   normalizeCoalition,
+  coalitionComplement,
 } from "./types.ts";
-import { fullExpansion } from "./expansion.ts";
+import { ruleSR, tupleSetToFormulas, tupleSetToTuples, type TupleSet } from "./expansion.ts";
 import {
   isPatentlyInconsistent,
+  isPatentlyInconsistentTuples,
   isEventuality,
-  eventualityGoal,
-  eventualityCoalition,
-  eventualityNextFormula,
-  isPositiveNext,
-  isNegativeNext,
+  isEnforceableNext,
+  isUnavoidableNext,
   isNextTime,
-  agentsInFormula,
+  nextTimeInner,
+  agentsInStateSet,
 } from "./formula.ts";
+import { clearDecompositionCache } from "./decomposition.ts";
 
-// Counter for generating unique node IDs
+// ============================================================
+// Node ID generation
+// ============================================================
+
 let nodeCounter = 0;
 
 function freshNodeId(prefix: string): NodeId {
@@ -61,20 +70,25 @@ function resetNodeCounter(): void {
   nodeCounter = 0;
 }
 
+// ============================================================
+// Main entry point
+// ============================================================
+
 /**
- * Main entry point: run the tableau procedure on a formula.
+ * Run the tableau procedure on a state formula.
  *
  * @param theta - The input formula to test for satisfiability
  * @returns TableauResult with all phases recorded
  */
 export function runTableau(
-  theta: Formula,
+  theta: StateFormula,
   onProgress?: (stage: string) => void
 ): TableauResult {
   resetNodeCounter();
+  clearDecompositionCache();
 
   // Compute all agents from the formula (tight satisfiability)
-  const allAgents = normalizeCoalition([...agentsInFormula(theta)]);
+  const allAgents = normalizeCoalition([...agentsInStateSet(new StateFormulaSet([theta]))]);
 
   // Phase 1: Construction
   if (onProgress) onProgress("Phase 1: Construction");
@@ -88,11 +102,23 @@ export function runTableau(
   if (onProgress) onProgress("Phase 3: State Elimination");
   const { tableau: finalTableau, eliminations } = stateEliminationPhase(initialTableau, allAgents);
 
-  // Check if open: does any surviving state contain θ?
+  // Check if open: does any surviving state contain theta?
   if (onProgress) onProgress("Checking Satisfiability");
   let satisfiable = false;
-  for (const [, state] of finalTableau.states) {
-    if (state.formulas.has(theta)) {
+
+  // Find the initial prestate's successor states
+  const initialPrestateId = "p0"; // We create the initial prestate as p0
+  // Get initial states (those reachable from the initial prestate via dashed edges)
+  const initialStateIds = new Set<NodeId>();
+  for (const edge of pretableau.dashedEdges) {
+    if (edge.from === initialPrestateId) {
+      initialStateIds.add(edge.to);
+    }
+  }
+
+  // Check if any initial state survives
+  for (const stateId of initialStateIds) {
+    if (finalTableau.states.has(stateId)) {
       satisfiable = true;
       break;
     }
@@ -116,14 +142,13 @@ export function runTableau(
 /**
  * Construction phase: builds the pretableau.
  *
- * Starts with a single prestate {θ}, then alternates (SR) and (Next)
+ * Starts with a single prestate {theta}, then alternates (SR) and (Next)
  * until no new prestates or states are created.
  *
- * (SR) expands prestates into states via full expansion.
- * (Next) creates successor prestates for each state based on move vectors.
+ * Reference: TATL vertex_state.ml — construct_state / construct_pre
  */
 function constructionPhase(
-  theta: Formula,
+  theta: StateFormula,
   allAgents: Coalition
 ): Pretableau {
   const pretableau: Pretableau = {
@@ -134,38 +159,29 @@ function constructionPhase(
     allAgents,
   };
 
-  // Maps from formula set key → node ID for reuse
+  // Maps from formula set key -> node ID for reuse
   const prestateIndex = new Map<string, NodeId>();
   const stateIndex = new Map<string, NodeId>();
 
-  // Create initial prestate {θ}
-  const initialSet = new FormulaSet([theta]);
-  const initialId = addPrestate(pretableau, prestateIndex, initialSet);
+  // Create initial prestate {theta}
+  const initialSet = new StateFormulaSet([theta]);
+  const initialId = getOrCreatePrestate(pretableau, prestateIndex, initialSet);
 
-  // Work queue
+  // BFS construction loop (matching TATL's construct_state / construct_pre)
   let prestatesToExpand: NodeId[] = [initialId];
 
   while (prestatesToExpand.length > 0) {
-    // Apply (SR) to all pending prestates
-    const newStates: NodeId[] = [];
-    for (const psId of prestatesToExpand) {
-      const ps = pretableau.prestates.get(psId)!;
-      const expanded = applySR(pretableau, stateIndex, ps);
-      newStates.push(...expanded);
-    }
+    // cons_from_pre: Apply (SR) to pending prestates -> get new states
+    const newStates = consFromPre(pretableau, stateIndex, prestatesToExpand, allAgents);
     prestatesToExpand = [];
 
-    // Apply (Next) to all newly created states
-    const newPrestates: NodeId[] = [];
-    for (const stId of newStates) {
-      const state = pretableau.states.get(stId)!;
-      // Check if this state already has successors (was processed before)
-      const alreadyProcessed = pretableau.solidEdges.some((e) => e.from === stId);
-      if (!alreadyProcessed) {
-        const result = applyNextRule(pretableau, prestateIndex, stId, state, allAgents);
-        newPrestates.push(...result);
-      }
-    }
+    if (newStates.length === 0) break;
+
+    // cons_from_states: Apply (Next) to new states -> get new prestates
+    const newPrestates = consFromStates(pretableau, prestateIndex, newStates, allAgents);
+
+    if (newPrestates.length === 0) break;
+
     prestatesToExpand = newPrestates;
   }
 
@@ -173,306 +189,468 @@ function constructionPhase(
 }
 
 /**
- * Rule (SR) — expand a prestate into states (p.18).
- *
- * Compute all full expansions of Γ; declare these to be states.
+ * Apply Rule SR to a list of prestates, creating states.
  * Returns IDs of newly created states.
+ *
+ * Reference: TATL vertex_state.ml — cons_from_pre
  */
-function applySR(
+function consFromPre(
   pretableau: Pretableau,
   stateIndex: Map<string, NodeId>,
-  prestate: PreState
+  prestateIds: NodeId[],
+  allAgents: Coalition
 ): NodeId[] {
-  const expansions = fullExpansion(prestate.formulas);
   const newStateIds: NodeId[] = [];
 
-  for (const expansion of expansions) {
-    const key = expansion.key();
-    let stateId: NodeId;
+  for (const psId of prestateIds) {
+    const ps = pretableau.prestates.get(psId)!;
 
-    if (stateIndex.has(key)) {
-      stateId = stateIndex.get(key)!;
-    } else {
-      stateId = freshNodeId("s");
-      const state: State = {
-        id: stateId,
-        formulas: expansion,
-        kind: "state",
-      };
-      pretableau.states.set(stateId, state);
-      stateIndex.set(key, stateId);
-      newStateIds.push(stateId);
+    // Apply Rule SR to get sets of formula tuples
+    const tupleSets = ruleSR(ps.formulas);
+
+    for (const tupleSet of tupleSets) {
+      // Extract detail: formulas and eventualities from tuples
+      const { formulas: ensFrm, eventualities: lstEvent } = getDetail(tupleSet);
+
+      // Remove Top if formula set has >1 element (matching TATL treat_top)
+      const treated = treatTop(ensFrm);
+
+      // Get or create state
+      const { id: stateId, isNew } = getOrCreateState(
+        pretableau, stateIndex, treated, lstEvent, allAgents
+      );
+
+      if (stateId === null) {
+        // State was inconsistent — skip
+        continue;
+      }
+
+      // Add dashed edge: prestate -> state
+      pretableau.dashedEdges.push({ from: psId, to: stateId });
+
+      if (isNew) {
+        newStateIds.push(stateId);
+      }
     }
-
-    // Add dashed edge: prestate ⤏ state
-    pretableau.dashedEdges.push({
-      from: prestate.id,
-      to: stateId,
-    });
   }
 
   return newStateIds;
 }
 
 /**
- * Rule (Next) — create successor prestates for a state based on move vectors.
+ * Apply Rule Next to a list of states, creating successor prestates.
+ * Returns IDs of newly created prestates.
  *
- * This is the key difference from CMAEL(CD). In ATL:
- * 1. Collect all next-time formulas from the state:
- *    - Positive: ⟨⟨A⟩⟩○ϕ  (the coalition votes FOR ϕ)
- *    - Negative: ¬⟨⟨A⟩⟩○ψ  (the counter-coalition can avoid ψ)
- *
- * 2. Generate all move vectors σ ∈ {0,...,k-1}^|Σ| where k = max(m+l, 1),
- *    m = # positive next-time formulas, l = # negative next-time formulas
- *
- * 3. For each move vector σ, compute the successor prestate Γ_σ:
- *    - Include ϕ for each ⟨⟨A⟩⟩○ϕ ∈ Δ where σ ∈ D(Δ, ⟨⟨A⟩⟩○ϕ)
- *    - Include ¬ψ for each ¬⟨⟨A⟩⟩○ψ ∈ Δ where σ ∈ D(Δ, ¬⟨⟨A⟩⟩○ψ)
- *
- * Reference: Section 4.2, pp. 18-19 of the paper.
+ * Reference: TATL vertex_state.ml — cons_from_states
  */
-function applyNextRule(
+function consFromStates(
   pretableau: Pretableau,
   prestateIndex: Map<string, NodeId>,
-  stateId: NodeId,
-  state: State,
+  stateIds: NodeId[],
   allAgents: Coalition
 ): NodeId[] {
-  // Classify next-time formulas into three categories (matching TATL):
-  //
-  // 1. Enforceable (positive): ⟨⟨A⟩⟩○ϕ — indexed 0..m-1
-  //    Fires when ALL agents in A play the formula's index.
-  //
-  // 2. Proper unavoidable (negative): ¬⟨⟨A⟩⟩○ψ where A ≠ Σ — indexed 0..l-1
-  //    Fires when Co(σ) = index AND Σ\A ⊆ N(σ).
-  //
-  // 3. Agents unavoidable: ¬⟨⟨Σ⟩⟩○ψ where A = Σ (all agents) — NOT indexed
-  //    Inner formula ¬ψ is ALWAYS included in every successor unconditionally.
-  //    These do NOT contribute to move vector dimensionality.
-
-  const enforceable: Formula[] = [];         // ⟨⟨A⟩⟩○ϕ
-  const properUnavoidable: Formula[] = [];   // ¬⟨⟨A⟩⟩○ψ where A ≠ Σ
-  const agentsUnavoidable: Formula[] = [];   // ¬⟨⟨Σ⟩⟩○ψ where A = Σ
-
-  for (const f of state.formulas) {
-    if (isPositiveNext(f)) {
-      enforceable.push(f);
-    } else if (isNegativeNext(f)) {
-      // Distinguish proper unavoidable vs agents unavoidable
-      if (f.kind === "not" && f.sub.kind === "next") {
-        if (coalitionEqual(
-          normalizeCoalition([...f.sub.coalition]),
-          allAgents
-        )) {
-          agentsUnavoidable.push(f);
-        } else {
-          properUnavoidable.push(f);
-        }
-      }
-    }
-  }
-
-  const m = enforceable.length;
-  const l = properUnavoidable.length;
-
-  // If no next-time formulas at all (including agents unavoidable),
-  // add a default successor with empty set
-  if (m === 0 && l === 0 && agentsUnavoidable.length === 0) {
-    const successorFormulas = new FormulaSet();
-    const key = successorFormulas.key();
-    let psId: NodeId;
-    if (prestateIndex.has(key)) {
-      psId = prestateIndex.get(key)!;
-    } else {
-      psId = addPrestate(pretableau, prestateIndex, successorFormulas);
-    }
-    pretableau.solidEdges.push({
-      from: stateId,
-      to: psId,
-      label: [],
-    });
-    return prestateIndex.has(key) ? [] : [psId];
-  }
-
-  const k = Math.max(m + l, 1); // Total moves per agent (at least 1)
-  const n = allAgents.length;
-
-  // Generate all move vectors σ ∈ {0,...,k-1}^n
-  const moveVectors = generateMoveVectors(n, k);
-
   const newPrestateIds: NodeId[] = [];
 
-  for (const sigma of moveVectors) {
-    const successorFormulas = new FormulaSet();
+  for (const stId of stateIds) {
+    const state = pretableau.states.get(stId)!;
 
-    // Part 1: Enforceable formulas — ⟨⟨A⟩⟩○ϕ at index i
-    // Include ϕ if ALL agents in A play i
-    for (let i = 0; i < enforceable.length; i++) {
-      const f = enforceable[i]!;
-      if (f.kind !== "next") continue;
-      if (inD_positive(sigma, f.coalition, i, allAgents, m)) {
-        successorFormulas.add(f.sub);
+    // get_formulae_next_rule: compute successor formula sets + move vectors
+    const successors = getFormulaeNextRule(state, allAgents);
+
+    for (const { formulas: ensFrm, moveVecs } of successors) {
+      const { id: psId, isNew } = getOrCreatePrestateChecked(
+        pretableau, prestateIndex, ensFrm
+      );
+
+      // Add one solid edge per move vector: state ->[mv] prestate
+      // (TATL stores a Movecs.t on each edge; we store individual edges)
+      for (const mv of moveVecs) {
+        pretableau.solidEdges.push({
+          from: stId,
+          to: psId,
+          label: mv,
+        });
+      }
+
+      if (isNew) {
+        newPrestateIds.push(psId);
       }
     }
-
-    // Part 2: Proper unavoidable formulas — ¬⟨⟨A⟩⟩○ψ where A ≠ Σ at index j
-    // Include ¬ψ if Co(σ) = j AND Σ\A ⊆ N(σ)
-    for (let j = 0; j < properUnavoidable.length; j++) {
-      const f = properUnavoidable[j]!;
-      if (f.kind !== "not" || f.sub.kind !== "next") continue;
-      const A = f.sub.coalition;
-      if (inD_negative(sigma, A, j, allAgents, m, l)) {
-        successorFormulas.add(Not(f.sub.sub));
-      }
-    }
-
-    // Part 3: Agents unavoidable formulas — ¬⟨⟨Σ⟩⟩○ψ
-    // ALWAYS include ¬ψ unconditionally in every successor
-    for (const f of agentsUnavoidable) {
-      if (f.kind !== "not" || f.sub.kind !== "next") continue;
-      successorFormulas.add(Not(f.sub.sub));
-    }
-
-    // Check for reuse
-    const key = successorFormulas.key();
-    let psId: NodeId;
-
-    if (prestateIndex.has(key)) {
-      psId = prestateIndex.get(key)!;
-    } else {
-      psId = addPrestate(pretableau, prestateIndex, successorFormulas);
-      newPrestateIds.push(psId);
-    }
-
-    // Add solid edge: state →[σ] prestate
-    pretableau.solidEdges.push({
-      from: stateId,
-      to: psId,
-      label: [...sigma],
-    });
   }
 
   return newPrestateIds;
 }
 
 /**
- * Check if move vector σ ∈ D(Δ, ⟨⟨A⟩⟩○ϕ) — positive case.
- *
- * D(Δ, ⟨⟨A⟩⟩○ϕ) is the set of move vectors where ALL agents in A
- * vote for the i-th positive formula (their move component = i).
- *
- * Each agent votes for a positive formula by playing move i (0-indexed).
+ * Extract formulas and eventualities from a TupleSet.
+ * 
+ * Reference: TATL vertex_state.ml — get_detail
  */
-function inD_positive(
-  sigma: MoveVector,
-  coalition: Coalition,
-  formulaIndex: number,
-  allAgents: Coalition,
-  _m: number
-): boolean {
-  for (const agent of coalition) {
-    const agentIdx = allAgents.indexOf(agent);
-    if (agentIdx < 0) return false; // Agent not in Σ
-    if (sigma[agentIdx] !== formulaIndex) return false;
-  }
-  return true;
-}
+function getDetail(tupleSet: TupleSet): {
+  formulas: StateFormulaSet;
+  eventualities: FormulaTuple[];
+} {
+  const formulas = new StateFormulaSet();
+  const eventualities: FormulaTuple[] = [];
 
-/**
- * Check if move vector σ ∈ D(Δ, ¬⟨⟨A⟩⟩○ψ) — negative case.
- *
- * D(Δ, ¬⟨⟨A'⟩⟩○ψ) is the set of move vectors where:
- *   neg(σ) = j (the j-th negative formula) AND
- *   Σ\A' ⊆ N(σ)  (all agents NOT in A' play "negative" moves)
- *
- * Where:
- *   N(σ) = set of agents i where σ_i ≥ m (playing a "negative" move)
- *   neg(σ) = [Σ_{i∈N(σ)} (σ_i - m)] mod l
- *
- * Reference: Section 4.2, Definition 4.7, p.18-19
- */
-function inD_negative(
-  sigma: MoveVector,
-  coalitionA: Coalition,
-  negFormulaIndex: number,
-  allAgents: Coalition,
-  m: number,
-  l: number
-): boolean {
-  if (l === 0) return false;
-
-  // Compute N(σ): agents playing negative moves (σ_i ≥ m)
-  const negAgents = new Set<string>();
-  for (let i = 0; i < allAgents.length; i++) {
-    if (sigma[i]! >= m) {
-      negAgents.add(allAgents[i]!);
+  for (const tuple of tupleSet) {
+    formulas.add(tuple.frm);
+    if (isEventuality(tuple.frm)) {
+      eventualities.push(tuple);
     }
   }
 
-  // Check: Σ\A' ⊆ N(σ) — all agents NOT in A' must play negative moves
-  const complementA = coalitionComplement(coalitionA, allAgents);
-  for (const agent of complementA) {
-    if (!negAgents.has(agent)) return false;
-  }
-
-  // Compute neg(σ) = [Σ_{i∈N(σ)} (σ_i - m)] mod l
-  let negSum = 0;
-  for (let i = 0; i < allAgents.length; i++) {
-    if (sigma[i]! >= m) {
-      negSum += sigma[i]! - m;
-    }
-  }
-  const negResult = negSum % l;
-
-  return negResult === negFormulaIndex;
+  return { formulas, eventualities };
 }
 
 /**
- * Generate all move vectors in {0,...,k-1}^n.
+ * Remove Top from a formula set if it has more than one element.
+ *
+ * Reference: TATL vertex_state.ml — treat_top
  */
-function generateMoveVectors(n: number, k: number): MoveVector[] {
-  if (n === 0) return [[]];
-  if (k === 0) return [];
-
-  const result: MoveVector[] = [];
-  const current = new Array(n).fill(0);
-
-  while (true) {
-    result.push([...current]);
-
-    // Increment (like counting in base k)
-    let carry = true;
-    for (let i = n - 1; i >= 0 && carry; i--) {
-      current[i]++;
-      if (current[i]! >= k) {
-        current[i] = 0;
-      } else {
-        carry = false;
-      }
-    }
-    if (carry) break; // Overflow — done
+function treatTop(fs: StateFormulaSet): StateFormulaSet {
+  if (fs.size > 1 && fs.has(STop)) {
+    const result = fs.clone();
+    result.delete(STop);
+    return result;
   }
-
-  return result;
+  return fs;
 }
 
 /**
- * Helper: add a prestate to the pretableau.
+ * Get or create a state vertex.
+ * If the formula set is inconsistent, returns null.
+ * If the state already exists, returns it without creating a new one.
+ * States with no next-time formulas get a synthetic Coal(allAgents, Next(State(Top))) added.
+ *
+ * Reference: TATL vertex_state.ml — get_or_create_state
  */
-function addPrestate(
+function getOrCreateState(
+  pretableau: Pretableau,
+  stateIndex: Map<string, NodeId>,
+  formulas: StateFormulaSet,
+  eventualities: FormulaTuple[],
+  allAgents: Coalition
+): { id: NodeId | null; isNew: boolean } {
+  const key = formulas.key();
+
+  // Already exists?
+  if (stateIndex.has(key)) {
+    return { id: stateIndex.get(key)!, isNew: false };
+  }
+
+  // Inconsistency check
+  if (isPatentlyInconsistent(formulas)) {
+    return { id: null, isNew: false };
+  }
+
+  // Classify next-time formulas (three categories)
+  const { enforceable, properUnavoidable, agentsUnavoidable } =
+    classifyNextTime(formulas, allAgents);
+
+  const nbrPos = enforceable.length;
+  const nbrNeg = properUnavoidable.length;
+  const nbrAgents = agentsUnavoidable.length;
+
+  let stateFormulas: StateFormulaSet;
+  let stateEnforceable: Array<[number, StateFormula]>;
+  let stateProperUnavoidable: Array<[number, StateFormula]>;
+  let stateAgentsUnavoidable: StateFormula[];
+  let moveVecCount: number;
+  let nbPos: number;
+  let nbNeg: number;
+
+  if (nbrPos + nbrNeg + nbrAgents === 0) {
+    // No next-time formulas: inject synthetic Coal(allAgents, Next(State(Top)))
+    // Matching TATL: Coal(!ag_all, Next(State(Top)))
+    const syntheticNext = Coal(allAgents, PNext(PState(STop)));
+    stateFormulas = formulas.clone();
+    stateFormulas.add(syntheticNext);
+    stateEnforceable = [[0, syntheticNext]];
+    stateProperUnavoidable = [];
+    stateAgentsUnavoidable = [];
+    moveVecCount = 1;
+    nbPos = 1;
+    nbNeg = 0;
+  } else {
+    stateFormulas = formulas;
+    stateEnforceable = enforceable.map((f, i) => [i, f]);
+    stateProperUnavoidable = properUnavoidable.map((f, i) => [i, f]);
+    stateAgentsUnavoidable = agentsUnavoidable;
+    moveVecCount = Math.max(nbrPos + nbrNeg, 1);
+    nbPos = nbrPos;
+    nbNeg = nbrNeg;
+  }
+
+  const stateId = freshNodeId("s");
+  const state: State = {
+    id: stateId,
+    formulas: stateFormulas,
+    tuples: eventualities,
+    kind: "state",
+    // Store next-time classification for the Next rule
+    _nextPos: stateEnforceable,
+    _nextNeg: stateProperUnavoidable,
+    _nextAgents: stateAgentsUnavoidable,
+    _nbPos: nbPos,
+    _nbNeg: nbNeg,
+    _moveVecCount: moveVecCount,
+  } as State & StateNextInfo;
+
+  pretableau.states.set(stateId, state);
+  stateIndex.set(key, stateId);
+
+  return { id: stateId, isNew: true };
+}
+
+/**
+ * Get or create a prestate vertex.
+ *
+ * Reference: TATL vertex_state.ml — get_or_create_prestate
+ */
+function getOrCreatePrestate(
   pretableau: Pretableau,
   prestateIndex: Map<string, NodeId>,
-  formulas: FormulaSet
+  formulas: StateFormulaSet
 ): NodeId {
   const key = formulas.key();
   if (prestateIndex.has(key)) {
     return prestateIndex.get(key)!;
   }
   const id = freshNodeId("p");
-  const ps: PreState = { id, formulas, kind: "prestate" };
+  const ps: PreState = { id, formulas, tuples: [], kind: "prestate" };
   pretableau.prestates.set(id, ps);
   prestateIndex.set(key, id);
   return id;
+}
+
+function getOrCreatePrestateChecked(
+  pretableau: Pretableau,
+  prestateIndex: Map<string, NodeId>,
+  formulas: StateFormulaSet
+): { id: NodeId; isNew: boolean } {
+  const key = formulas.key();
+  if (prestateIndex.has(key)) {
+    return { id: prestateIndex.get(key)!, isNew: false };
+  }
+  const id = freshNodeId("p");
+  const ps: PreState = { id, formulas, tuples: [], kind: "prestate" };
+  pretableau.prestates.set(id, ps);
+  prestateIndex.set(key, id);
+  return { id, isNew: true };
+}
+
+// ============================================================
+// Next-time formula classification
+// ============================================================
+
+/** Internal state info stored alongside the State node */
+interface StateNextInfo {
+  _nextPos: Array<[number, StateFormula]>;      // numbered enforceable
+  _nextNeg: Array<[number, StateFormula]>;      // numbered proper unavoidable
+  _nextAgents: StateFormula[];                   // agents unavoidable
+  _nbPos: number;
+  _nbNeg: number;
+  _moveVecCount: number;
+}
+
+/**
+ * Classify next-time formulas in a state into three categories:
+ *
+ * 1. Enforceable: Coal(A, Next(State(f)))
+ * 2. Proper unavoidable: CoCoal(A, Next(State(f))) where A != allAgents
+ * 3. Agents unavoidable: CoCoal(allAgents, Next(State(f)))
+ *
+ * Reference: TATL construction.ml — create_lst_nexttime
+ */
+function classifyNextTime(
+  formulas: StateFormulaSet,
+  allAgents: Coalition
+): {
+  enforceable: StateFormula[];
+  properUnavoidable: StateFormula[];
+  agentsUnavoidable: StateFormula[];
+} {
+  const enforceable: StateFormula[] = [];
+  const properUnavoidable: StateFormula[] = [];
+  const agentsUnavoidable: StateFormula[] = [];
+
+  for (const f of formulas) {
+    if (isEnforceableNext(f)) {
+      enforceable.push(f);
+    } else if (isUnavoidableNext(f)) {
+      if (f.kind === "cocoal" && coalitionEqual(f.coalition, allAgents)) {
+        agentsUnavoidable.push(f);
+      } else {
+        properUnavoidable.push(f);
+      }
+    }
+  }
+
+  return { enforceable, properUnavoidable, agentsUnavoidable };
+}
+
+// ============================================================
+// Next Rule — compute successor formula sets + move vectors
+// ============================================================
+
+/**
+ * Compute N(sigma): set of agents playing negative moves (sigma_i >= nbPos).
+ *
+ * Reference: TATL construction.ml — function_n_sigma
+ */
+function functionNSigma(
+  movec: Array<[Agent, number]>,
+  nbPos: number
+): Set<Agent> {
+  const result = new Set<Agent>();
+  for (const [agent, move] of movec) {
+    if (move >= nbPos) {
+      result.add(agent);
+    }
+  }
+  return result;
+}
+
+/**
+ * Compute Co(sigma): the negative move index.
+ *
+ * Reference: TATL construction.ml — function_co_sigma
+ */
+function functionCoSigma(
+  movec: Array<[Agent, number]>,
+  nbPos: number,
+  nbNeg: number
+): number {
+  const nAgents = functionNSigma(movec, nbPos);
+  let sum = 0;
+  for (const [agent, move] of movec) {
+    if (nAgents.has(agent)) {
+      sum += move - nbPos;
+    }
+  }
+  return sum % nbNeg;
+}
+
+/**
+ * Compute Gamma(sigma): the successor formula set for a given move vector.
+ *
+ * Reference: TATL construction.ml — function_gamma_sigma
+ */
+function functionGammaSigma(
+  movec: Array<[Agent, number]>,
+  lstNextEnforc: Array<[number, StateFormula]>,
+  lstNextUnavoid: Array<[number, StateFormula]>,
+  lstNextAgents: StateFormula[],
+  nbPos: number,
+  nbNeg: number,
+  allAgents: Coalition
+): StateFormulaSet {
+  const result = new StateFormulaSet();
+
+  // Enforceable: Coal(A, Next(State(f))) at index n
+  // Fires if ALL agents in A play n
+  for (const [n, formula] of lstNextEnforc) {
+    if (formula.kind === "coal" && formula.path.kind === "next" && formula.path.sub.kind === "state") {
+      const la = formula.coalition;
+      const f = formula.path.sub.sub;
+      if (la.every(a => {
+        const entry = movec.find(([ag]) => ag === a);
+        return entry !== undefined && entry[1] === n;
+      })) {
+        result.add(f);
+      }
+    }
+  }
+
+  // Proper unavoidable: CoCoal(A, Next(State(f))) at index n
+  // Fires if Co(sigma) == n AND allAgents\A ⊆ N(sigma)
+  if (nbNeg > 0) {
+    for (const [n, formula] of lstNextUnavoid) {
+      if (formula.kind === "cocoal" && formula.path.kind === "next" && formula.path.sub.kind === "state") {
+        const la = formula.coalition;
+        const f = formula.path.sub.sub;
+        const coSigma = functionCoSigma(movec, nbPos, nbNeg);
+        const nSigma = functionNSigma(movec, nbPos);
+        const complement = coalitionComplement(la, allAgents);
+        if (coSigma === n && complement.every(a => nSigma.has(a))) {
+          result.add(f);
+        }
+      }
+    }
+  }
+
+  // Agents unavoidable: CoCoal(allAgents, Next(State(f))) — always fires
+  for (const formula of lstNextAgents) {
+    if (formula.kind === "cocoal" && formula.path.kind === "next" && formula.path.sub.kind === "state") {
+      result.add(formula.path.sub.sub);
+    }
+  }
+
+  // If empty, add Top (matching TATL)
+  if (result.size === 0) {
+    result.add(STop);
+  }
+
+  return result;
+}
+
+/**
+ * Generate all move vectors and compute successor formula sets.
+ * Groups identical formula sets together with their move vectors.
+ *
+ * Reference: TATL construction.ml — get_formulae_next_rule, create_lst_movecs
+ */
+function getFormulaeNextRule(
+  state: State & Partial<StateNextInfo>,
+  allAgents: Coalition
+): Array<{ formulas: StateFormulaSet; moveVecs: MoveVector[] }> {
+  const info = state as State & StateNextInfo;
+  const lstNextEnforc = info._nextPos ?? [];
+  const lstNextUnavoid = info._nextNeg ?? [];
+  const lstNextAgents = info._nextAgents ?? [];
+  const nbPos = info._nbPos ?? 0;
+  const nbNeg = info._nbNeg ?? 0;
+  const moveVecCount = info._moveVecCount ?? 1;
+
+  const n = allAgents.length;
+  const totalMoveVecs = Math.pow(moveVecCount, n);
+
+  // For grouping: formula set key -> { formulas, moveVecs[] }
+  const groups = new Map<string, { formulas: StateFormulaSet; moveVecs: MoveVector[] }>();
+
+  // Generate all move vectors (base moveVecCount, n digits)
+  for (let i = 0; i < totalMoveVecs; i++) {
+    // Convert index to move vector: list of (agent, move) pairs
+    const movec: Array<[Agent, number]> = [];
+    let remaining = i;
+    for (let j = n - 1; j >= 0; j--) {
+      const move = remaining % moveVecCount;
+      remaining = Math.floor(remaining / moveVecCount);
+      movec.unshift([allAgents[j]!, move]);
+    }
+
+    // Compute Gamma(sigma)
+    const ensFrm = functionGammaSigma(
+      movec, lstNextEnforc, lstNextUnavoid, lstNextAgents,
+      nbPos, nbNeg, allAgents
+    );
+
+    // Extract just the move numbers as a MoveVector
+    const mv: MoveVector = movec.map(([, m]) => m);
+
+    // Group by formula set
+    const key = ensFrm.key();
+    if (groups.has(key)) {
+      groups.get(key)!.moveVecs.push(mv);
+    } else {
+      groups.set(key, { formulas: ensFrm, moveVecs: [mv] });
+    }
+  }
+
+  // Return one entry per group. Each entry contains the formula set and ALL move vectors
+  // that lead to this successor. In consFromStates we create one edge per move vector.
+  return [...groups.values()];
 }
 
 // ============================================================
@@ -480,13 +658,14 @@ function addPrestate(
 // ============================================================
 
 /**
- * Prestate elimination phase (Rule PR).
+ * Prestate elimination phase.
  *
- * For every prestate Γ:
- * 1. Remove Γ
- * 2. If state Δ →[σ] Γ, then for every Δ' ∈ states(Γ), put Δ →[σ] Δ'
+ * For every prestate P:
+ * 1. Remove P
+ * 2. If state S ->[mv] P and P -->> S', then add edge S ->[mv] S' (viaPrestate=P)
  *
- * Result: initial tableau with only states and direct state→state edges.
+ * Reference: TATL elimination uses the graph directly (prestates stay in graph).
+ * We flatten to state->state edges with viaPrestate annotation.
  */
 function prestateEliminationPhase(pretableau: Pretableau, allAgents: Coalition): Tableau {
   const tableau: Tableau = {
@@ -495,7 +674,7 @@ function prestateEliminationPhase(pretableau: Pretableau, allAgents: Coalition):
     allAgents,
   };
 
-  // Build map: prestate ID → set of state IDs it expands to
+  // Build map: prestate ID -> set of state IDs it expands to
   const prestateToStates = new Map<NodeId, Set<NodeId>>();
   for (const edge of pretableau.dashedEdges) {
     if (!prestateToStates.has(edge.from)) {
@@ -504,9 +683,7 @@ function prestateEliminationPhase(pretableau: Pretableau, allAgents: Coalition):
     prestateToStates.get(edge.from)!.add(edge.to);
   }
 
-  // For each solid edge Δ →[σ] Γ, replace with Δ →[σ] Δ' for each Δ' ∈ states(Γ)
-  // Preserve viaPrestate so E3 can group edges by the prestate they passed through.
-  // This is needed for the ∀-prestates, ∃-states pattern in eventuality realization.
+  // For each solid edge S ->[mv] P, replace with S ->[mv] S' for each S' in states(P)
   for (const edge of pretableau.solidEdges) {
     const targetStates = prestateToStates.get(edge.to);
     if (targetStates) {
@@ -531,382 +708,657 @@ function prestateEliminationPhase(pretableau: Pretableau, allAgents: Coalition):
 /**
  * State elimination phase.
  *
- * Three elimination rules applied in dovetailed cycles:
- * (E1): Remove states that are patently inconsistent
- *       (this shouldn't happen if expansion is correct, but just in case)
- * (E2): Remove states where a next-time formula has no surviving successor
- *       for the required move vectors.
- * (E3): Remove states where an eventuality is not realized.
+ * Uses a dovetailed fixpoint loop:
+ * - E2: Every move vector from a state must have a surviving successor
+ * - E3: Every eventuality must be realizable via whatfalse residuals
  *
- * For ATL, E2 checks: for each positive next-time formula ⟨⟨A⟩⟩○ϕ in state Δ,
- * there must exist at least one move vector σ ∈ D(Δ, ⟨⟨A⟩⟩○ϕ) such that
- * Δ →[σ] Δ' where Δ' survives. Similarly for negative.
- *
- * Actually, the paper says (Definition 4.9, p.19):
- * E2: eliminate state Δ if there exists a move vector σ such that
- *     Δ has no σ-successor in the tableau.
- *
- * That is: EVERY move vector must have at least one surviving successor.
+ * Reference: TATL elimination_star.ml — cycle_state_elimination, state_elimination
  */
-function stateEliminationPhase(initialTableau: Tableau, allAgents: Coalition): { tableau: Tableau; eliminations: EliminationRecord[] } {
+function stateEliminationPhase(
+  initialTableau: Tableau,
+  allAgents: Coalition
+): { tableau: Tableau; eliminations: EliminationRecord[] } {
   const states = new Map(initialTableau.states);
   let edges = [...initialTableau.edges];
   const eliminations: EliminationRecord[] = [];
-
-  // Collect all eventualities appearing in any state
-  const allEventualities = collectAllEventualities(states);
+  const suppressed = new Set<NodeId>(); // h_suppr equivalent
 
   // Dovetailed elimination loop
-  let removedInCycle = true;
-  while (removedInCycle) {
-    removedInCycle = false;
+  let changed = true;
+  while (changed) {
+    const prevSuppressed = suppressed.size;
 
-    // Apply E2 (missing successors for move vectors)
-    const e2Records = applyE2(states, edges, allAgents);
-    if (e2Records.length > 0) {
-      eliminations.push(...e2Records);
-      removedInCycle = true;
-      edges = edges.filter((e) => states.has(e.from) && states.has(e.to));
-    }
+    stateElimination(states, edges, allAgents, suppressed, eliminations);
 
-    // Apply E3 for each eventuality
-    for (const eventuality of allEventualities) {
-      const e3Records = applyE3(states, edges, eventuality, allAgents);
-      if (e3Records.length > 0) {
-        eliminations.push(...e3Records);
-        removedInCycle = true;
-        edges = edges.filter((e) => states.has(e.from) && states.has(e.to));
-      }
+    const newSuppressed = suppressed.size;
+    changed = newSuppressed !== prevSuppressed;
 
-      // Re-apply E2 after E3 eliminations
-      const e2After = applyE2(states, edges, allAgents);
-      if (e2After.length > 0) {
-        eliminations.push(...e2After);
-        removedInCycle = true;
-        edges = edges.filter((e) => states.has(e.from) && states.has(e.to));
-      }
+    // Check if still open
+    if (changed) {
+      // Clean edges of suppressed nodes
+      edges = edges.filter(e => !suppressed.has(e.from) && !suppressed.has(e.to));
     }
   }
 
-  edges = edges.filter((e) => states.has(e.from) && states.has(e.to));
+  // Remove suppressed states
+  for (const id of suppressed) {
+    states.delete(id);
+  }
+
+  // Final edge cleanup
+  edges = edges.filter(e => states.has(e.from) && states.has(e.to));
+
   return { tableau: { states, edges, allAgents }, eliminations };
 }
 
 /**
- * Collect all distinct eventualities from all states.
+ * One round of state elimination (E2 + E3).
+ *
+ * Reference: TATL elimination_star.ml — state_elimination
  */
-function collectAllEventualities(states: Map<NodeId, State>): Formula[] {
-  const seen = new Set<string>();
-  const result: Formula[] = [];
-  for (const [, state] of states) {
-    for (const f of state.formulas) {
-      if (isEventuality(f)) {
-        const key = formulaKey(f);
-        if (!seen.has(key)) {
-          seen.add(key);
-          result.push(f);
-        }
+function stateElimination(
+  states: Map<NodeId, State>,
+  edges: SolidEdge[],
+  allAgents: Coalition,
+  suppressed: Set<NodeId>,
+  eliminations: EliminationRecord[]
+): void {
+  for (const [id, state] of states) {
+    if (suppressed.has(id)) continue;
+
+    // E2: Check complete successors
+    if (!isCompletSucc(id, state, edges, suppressed, allAgents)) {
+      removeState(id, state, suppressed, eliminations, "E2");
+      continue;
+    }
+
+    // E3: Check eventuality realization
+    const nonImmReal = getEvNonImmReal(state, suppressed);
+    if (nonImmReal.length > 0) {
+      if (!verifEvNonImmReal(nonImmReal, id, state, states, edges, allAgents, suppressed)) {
+        removeState(id, state, suppressed, eliminations, "E3");
       }
     }
   }
+}
+
+/**
+ * Remove a state (mark as suppressed).
+ */
+function removeState(
+  id: NodeId,
+  state: State,
+  suppressed: Set<NodeId>,
+  eliminations: EliminationRecord[],
+  rule: "E2" | "E3"
+): void {
+  if (suppressed.has(id)) return;
+  suppressed.add(id);
+  eliminations.push({
+    stateId: id,
+    rule,
+    formula: state.tuples.length > 0 ? state.tuples[0]!.frm : STop,
+    stateFormulas: state.formulas,
+  });
+}
+
+// ============================================================
+// E2: Complete successors
+// ============================================================
+
+/**
+ * Check if a state has complete successors (all required move vectors covered).
+ *
+ * A state is complete if for EVERY move vector that was generated during
+ * construction, there exists at least one non-suppressed successor.
+ *
+ * Reference: TATL elimination_star.ml — is_complet_succ
+ *   Movecs.equal ens_succ_mv (Graph_tableau.V.label v).assoc_movecs
+ */
+function isCompletSucc(
+  stateId: NodeId,
+  state: State,
+  edges: SolidEdge[],
+  suppressed: Set<NodeId>,
+  allAgents: Coalition
+): boolean {
+  const info = state as State & Partial<StateNextInfo>;
+  const moveVecCount = info._moveVecCount;
+
+  if (moveVecCount === undefined) return true; // No next-time info
+
+  // Collect all surviving move vectors (those with at least one non-suppressed successor)
+  const survivingMoveVecs = new Set<string>();
+  for (const edge of edges) {
+    if (edge.from === stateId && !suppressed.has(edge.to)) {
+      survivingMoveVecs.add(edge.label.join(","));
+    }
+  }
+
+  // Generate all required move vectors and check each one
+  const n = allAgents.length;
+  const totalRequired = Math.pow(moveVecCount, n);
+
+  for (let i = 0; i < totalRequired; i++) {
+    // Convert index to move vector
+    const mv: number[] = [];
+    let remaining = i;
+    for (let j = n - 1; j >= 0; j--) {
+      mv.unshift(remaining % moveVecCount);
+      remaining = Math.floor(remaining / moveVecCount);
+    }
+    if (!survivingMoveVecs.has(mv.join(","))) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+// ============================================================
+// E3: Eventuality realization via whatfalse residuals
+// ============================================================
+
+/**
+ * Simplify AndP with State(Top) handling.
+ *
+ * Reference: TATL elimination_star.ml — simpl_andp
+ */
+function simplAndP(phi1: PathFormula, phi2: PathFormula): PathFormula {
+  if (phi1.kind === "state" && phi1.sub.kind === "top") {
+    if (phi2.kind === "state" && phi2.sub.kind === "top") return PState(STop);
+    return phi2;
+  }
+  if (phi2.kind === "state" && phi2.sub.kind === "top") return phi1;
+  return { kind: "andp", left: phi1, right: phi2 };
+}
+
+/**
+ * Simplify OrP with State(Top) handling.
+ *
+ * Reference: TATL elimination_star.ml — simpl_orp
+ */
+function simplOrP(phi1: PathFormula, phi2: PathFormula): PathFormula {
+  if (phi1.kind === "state" && phi1.sub.kind === "top") return PState(STop);
+  if (phi2.kind === "state" && phi2.sub.kind === "top") return PState(STop);
+  return { kind: "orp", left: phi1, right: phi2 };
+}
+
+/**
+ * Compute what part of a path formula is NOT yet realized at a state.
+ * Returns the residual path formula. State(Top) means fully realized.
+ *
+ * Reference: TATL elimination_star.ml — whatfalse
+ */
+function whatfalse(
+  path: PathFormula,
+  ensFrm: StateFormulaSet,
+  pathFrm: PathFormulaSet
+): PathFormula {
+  function wf(pathEv: PathFormula): PathFormula {
+    switch (pathEv.kind) {
+      case "andp":
+        return simplAndP(wf(pathEv.left), wf(pathEv.right));
+
+      case "orp":
+        return simplOrP(wf(pathEv.left), wf(pathEv.right));
+
+      case "state":
+        // If the state formula is in the formula set, or the path formula
+        // State(s) is in the tracked path formulas, it's realized
+        if (ensFrm.has(pathEv.sub) || pathFrm.has(pathEv)) {
+          return PState(STop);
+        }
+        return pathEv;
+
+      case "next":
+        // Next formulas are structurally handled — realized
+        return PState(STop);
+
+      case "always":
+        // Always formulas are structurally handled — realized
+        return PState(STop);
+
+      case "until":
+        // Until(p1, p2): check if the goal (p2) is satisfied
+        if (pathEv.right.kind === "state") {
+          if (ensFrm.has(pathEv.right.sub) || pathFrm.has(PState(pathEv.right.sub))) {
+            return PState(STop);
+          }
+        } else {
+          if (pathFrm.has(pathEv.right)) {
+            return PState(STop);
+          }
+        }
+        return pathEv;
+
+      default:
+        // NegP should not appear after NNF
+        throw new Error(`whatfalse: unexpected path formula kind ${pathEv.kind}`);
+    }
+  }
+
+  return wf(path);
+}
+
+/**
+ * Check if an eventuality is immediately realized at a state.
+ *
+ * Reference: TATL elimination_star.ml — is_imm_real
+ */
+function isImmReal(
+  ev: FormulaTuple,
+  ensFrm: StateFormulaSet
+): { realized: boolean; residual: PathFormula } {
+  const path = getEventualityPath(ev.frm);
+  const residual = whatfalse(path, ensFrm, ev.pathFrm);
+
+  if (residual.kind === "state" && residual.sub.kind === "top") {
+    return { realized: true, residual: PState(STop) };
+  }
+  return { realized: false, residual };
+}
+
+/**
+ * Extract the path formula from an eventuality (Coal or CoCoal).
+ */
+function getEventualityPath(f: StateFormula): PathFormula {
+  if (f.kind === "coal" || f.kind === "cocoal") {
+    return f.path;
+  }
+  throw new Error("getEventualityPath: not a coalition formula");
+}
+
+/**
+ * Get eventualities that are NOT immediately realized at a state.
+ *
+ * Reference: TATL elimination_star.ml — get_ev_non_imm_real
+ */
+function getEvNonImmReal(
+  state: State,
+  suppressed: Set<NodeId>
+): Array<{ ev: FormulaTuple; residual: PathFormula }> {
+  const result: Array<{ ev: FormulaTuple; residual: PathFormula }> = [];
+
+  for (const ev of state.tuples) {
+    const { realized, residual } = isImmReal(ev, state.formulas);
+    if (!realized) {
+      result.push({ ev, residual });
+    }
+  }
+
   return result;
 }
 
 /**
- * Rule (E2) — eliminate states where some move vector has no surviving successor.
+ * Find the eventuality tuple in a state's event list that matches a formula.
  *
- * Definition 4.9 from the paper (p.19-20):
- * Eliminate state Δ if there exists a move vector σ ∈ {0,...,k-1}^|Σ|
- * such that Δ has no σ-successor in the tableau.
- *
- * In other words: EVERY move vector that should exist from this state
- * must have at least one surviving successor. If any move vector's
- * successors have all been eliminated, the state itself is eliminated.
- *
- * The required move vectors for a state are ALL vectors in {0,...,k-1}^n
- * where k = max(m+l, 1), m = # positive next-time formulas, l = # negative.
+ * Reference: TATL elimination_star.ml — get_tuple
  */
-function applyE2(
-  states: Map<NodeId, State>,
-  edges: SolidEdge[],
-  allAgents: Coalition
-): EliminationRecord[] {
-  const records: EliminationRecord[] = [];
-  let changed = true;
-
-  while (changed) {
-    changed = false;
-    const toRemove: { id: NodeId; sigma: MoveVector }[] = [];
-
-    for (const [id, state] of states) {
-      // Count next-time formulas using three-category classification
-      let m = 0; // enforceable (positive) next-time formulas
-      let l = 0; // proper unavoidable (negative, coalition ≠ Σ)
-      let agentsCount = 0; // agents unavoidable (negative, coalition = Σ)
-      for (const f of state.formulas) {
-        if (isPositiveNext(f)) {
-          m++;
-        } else if (isNegativeNext(f)) {
-          if (f.kind === "not" && f.sub.kind === "next" &&
-              coalitionEqual(normalizeCoalition([...f.sub.coalition]), allAgents)) {
-            agentsCount++;
-          } else {
-            l++;
-          }
-        }
-      }
-
-      if (m === 0 && l === 0 && agentsCount === 0) continue; // No next-time formulas
-
-      const k = Math.max(m + l, 1);
-      const n = allAgents.length;
-      const requiredMoveVectors = generateMoveVectors(n, k);
-
-      // For each required move vector, check if there's a surviving successor
-      for (const sigma of requiredMoveVectors) {
-        const sigmaKey = sigma.join(",");
-        const hasSurvivor = edges.some((e) => {
-          if (e.from !== id) return false;
-          if (!states.has(e.to)) return false;
-          return e.label.join(",") === sigmaKey;
-        });
-        if (!hasSurvivor) {
-          toRemove.push({ id, sigma });
-          break; // One missing move vector is enough to eliminate
-        }
-      }
-    }
-
-    for (const { id, sigma } of toRemove) {
-      if (!states.has(id)) continue;
-      const state = states.get(id)!;
-      records.push({
-        stateId: id,
-        rule: "E2",
-        formula: state.formulas.toArray()[0]!, // Representative formula
-        stateFormulas: state.formulas.clone(),
-      });
-      states.delete(id);
-      changed = true;
+function getTuple(frm: StateFormula, eventList: FormulaTuple[]): FormulaTuple | null {
+  for (const ev of eventList) {
+    if (stateKey(ev.frm) === stateKey(frm)) {
+      return ev;
     }
   }
-
-  return records;
-}
-
-/**
- * Rule (E3) — eliminate states with unrealized eventualities.
- *
- * For ATL, the eventualities are:
- * - ⟨⟨A⟩⟩(ϕ U ψ): needs ψ to eventually hold along a strategic path
- * - ¬⟨⟨A⟩⟩□ϕ: needs ¬ϕ to eventually hold along a strategic path
- *
- * CRITICAL: The marking procedure must only follow edges that are
- * consistent with the eventuality's coalition strategy. Specifically:
- *
- * For eventuality ⟨⟨A⟩⟩(ϕ U ψ), which unfolds to ⟨⟨A⟩⟩○⟨⟨A⟩⟩(ϕ U ψ),
- * we can only follow edges whose move vector σ ∈ D(Δ, ⟨⟨A⟩⟩○⟨⟨A⟩⟩(ϕ U ψ)).
- *
- * For eventuality ¬⟨⟨A⟩⟩□ϕ, which unfolds to ¬⟨⟨A⟩⟩○⟨⟨A⟩⟩□ϕ,
- * we can only follow edges whose move vector σ ∈ D(Δ, ¬⟨⟨A⟩⟩○⟨⟨A⟩⟩□ϕ).
- *
- * This matches the TATL OCaml implementation (verif_edge / get_succ_to_be_verified_simpl).
- *
- * Marking procedure:
- * 1. Mark all states where the eventuality's goal is immediately realized
- * 2. Fixpoint: mark state Δ if it contains the eventuality and has a
- *    coalition-consistent edge to a marked successor
- * 3. Eliminate all unmarked states containing the eventuality
- */
-function applyE3(
-  states: Map<NodeId, State>,
-  edges: SolidEdge[],
-  eventuality: Formula,
-  allAgents: Coalition
-): EliminationRecord[] {
-  const goal = eventualityGoal(eventuality);
-  const nextFormula = eventualityNextFormula(eventuality);
-
-  // Find all states containing this eventuality
-  const statesWithEventuality = new Set<NodeId>();
-  for (const [id, state] of states) {
-    if (state.formulas.has(eventuality)) {
-      statesWithEventuality.add(id);
-    }
-  }
-
-  if (statesWithEventuality.size === 0) return [];
-
-  // Marking procedure
-  //
-  // CRITICAL: Uses the ∀-prestates, ∃-states pattern from TATL.
-  //
-  // After prestate elimination, edges carry viaPrestate info. Two edges from
-  // state S with the same viaPrestate correspond to different states expanded
-  // from the same prestate. These are alternatives (∃: at least one must work).
-  // But different prestates represent different strategic outcomes (∀: all must work).
-  //
-  // So to mark state S: for EACH consistent prestate P reachable from S,
-  // there must exist at least one edge S→[σ]→S' via P where S' is marked.
-  const marked = new Set<NodeId>();
-
-  // Step 1: Mark all states containing the goal
-  for (const [id, state] of states) {
-    if (state.formulas.has(goal)) {
-      marked.add(id);
-    }
-  }
-
-  // Step 2: Fixpoint marking — ∀-prestates, ∃-states
-  let fixpointChanged = true;
-  while (fixpointChanged) {
-    fixpointChanged = false;
-    for (const id of statesWithEventuality) {
-      if (marked.has(id)) continue;
-      if (!states.has(id)) continue;
-
-      const state = states.get(id)!;
-
-      // Find the index of the next-time formula in this state's next-time formulas.
-      const nextFormulaIndex = findNextFormulaIndex(state, nextFormula, allAgents);
-      if (nextFormulaIndex === null) continue;
-
-      // Collect all coalition-consistent edges from this state, grouped by viaPrestate.
-      // Each group represents a prestate — ALL groups must have at least one marked successor.
-      const prestateGroups = new Map<string, SolidEdge[]>();
-
-      for (const edge of edges) {
-        if (edge.from !== id) continue;
-        if (!states.has(edge.to)) continue;
-
-        if (isEdgeConsistentWithEventuality(edge.label, nextFormula, nextFormulaIndex, state, allAgents)) {
-          const groupKey = edge.viaPrestate ?? edge.to; // fallback to edge.to if no prestate info
-          if (!prestateGroups.has(groupKey)) {
-            prestateGroups.set(groupKey, []);
-          }
-          prestateGroups.get(groupKey)!.push(edge);
-        }
-      }
-
-      // If no consistent edges at all, can't mark
-      if (prestateGroups.size === 0) continue;
-
-      // ALL prestate groups must have at least one marked successor
-      let allGroupsSatisfied = true;
-      for (const [, groupEdges] of prestateGroups) {
-        const groupHasMarked = groupEdges.some(e => marked.has(e.to));
-        if (!groupHasMarked) {
-          allGroupsSatisfied = false;
-          break;
-        }
-      }
-
-      if (allGroupsSatisfied) {
-        marked.add(id);
-        fixpointChanged = true;
-      }
-    }
-  }
-
-  // Step 3: Eliminate unmarked states containing the eventuality
-  const records: EliminationRecord[] = [];
-  for (const id of statesWithEventuality) {
-    if (!marked.has(id) && states.has(id)) {
-      const state = states.get(id)!;
-      records.push({
-        stateId: id,
-        rule: "E3",
-        formula: eventuality,
-        stateFormulas: state.formulas.clone(),
-      });
-      states.delete(id);
-    }
-  }
-
-  return records;
-}
-
-/**
- * Find the index of a next-time formula among a state's next-time formulas,
- * using the three-category classification.
- *
- * Returns { type, index } or null if not found.
- * - "positive": enforceable, indexed among enforceable formulas
- * - "negative": proper unavoidable (coalition ≠ Σ), indexed among proper unavoidable
- * - "agents": agents unavoidable (coalition = Σ), always fires — no index needed
- */
-function findNextFormulaIndex(
-  state: State,
-  nextFormula: Formula,
-  allAgents: Coalition
-): { type: "positive" | "negative" | "agents"; index: number } | null {
-  let posIdx = 0;
-  let negIdx = 0;
-
-  for (const f of state.formulas) {
-    if (isPositiveNext(f)) {
-      if (formulaEqual(f, nextFormula)) {
-        return { type: "positive", index: posIdx };
-      }
-      posIdx++;
-    } else if (isNegativeNext(f)) {
-      const isAgentsUnavoidable = f.kind === "not" && f.sub.kind === "next" &&
-        coalitionEqual(normalizeCoalition([...f.sub.coalition]), allAgents);
-      if (formulaEqual(f, nextFormula)) {
-        if (isAgentsUnavoidable) {
-          return { type: "agents", index: 0 };
-        }
-        return { type: "negative", index: negIdx };
-      }
-      if (!isAgentsUnavoidable) {
-        negIdx++;
-      }
-    }
-  }
-
   return null;
 }
 
 /**
- * Check if an edge's move vector is consistent with an eventuality's coalition strategy.
+ * Verify all non-immediately-realized eventualities of a state.
  *
- * For a positive next-time formula ⟨⟨A⟩⟩○ϕ at index i:
- *   All agents in A must play i (vote for this formula).
- *
- * For a negative next-time formula ¬⟨⟨A'⟩⟩○ψ at index j:
- *   neg(σ) = j AND Σ\A' ⊆ N(σ)
+ * Reference: TATL elimination_star.ml — verif_ev_non_imm_real
  */
-function isEdgeConsistentWithEventuality(
-  sigma: MoveVector,
-  nextFormula: Formula,
-  nextFormulaIndex: { type: "positive" | "negative" | "agents"; index: number },
+function verifEvNonImmReal(
+  lstEv: Array<{ ev: FormulaTuple; residual: PathFormula }>,
+  stateId: NodeId,
   state: State,
+  states: Map<NodeId, State>,
+  edges: SolidEdge[],
+  allAgents: Coalition,
+  suppressed: Set<NodeId>
+): boolean {
+  for (const { ev, residual } of lstEv) {
+    // Fresh memoization tables for each eventuality verification
+    const hPst = new Map<string, PstEntry>();
+    const hSt = new Set<string>();
+
+    hSt.add(memoKeySt(stateId, residual));
+
+    const ok = verifSucc(ev, stateId, state, residual, states, edges, allAgents, suppressed, hPst, hSt);
+    if (!ok) return false;
+  }
+  return true;
+}
+
+/** Memoization entry for prestate verification */
+interface PstEntry {
+  value: number; // 0=exploring, 1=OK, 2=FAIL
+  lst: Array<{ state: State; evTuple: FormulaTuple }>;
+  lst2: Array<{ state: State; evTuple: FormulaTuple }>;
+}
+
+function memoKeyPst(prestateId: NodeId, path: PathFormula): string {
+  return `${prestateId}|${pathKey(path)}`;
+}
+
+function memoKeySt(stateId: NodeId, path: PathFormula): string {
+  return `${stateId}|${pathKey(path)}`;
+}
+
+/**
+ * Check if an edge (set of move vectors) is consistent with an eventuality.
+ *
+ * For enforceable (Coal): all agents in A must play the eventuality's index.
+ * For agents unavoidable (CoCoal with all agents): always consistent.
+ * For proper unavoidable (CoCoal with A != allAgents): Co(sigma) = index AND complement ⊆ N(sigma).
+ *
+ * Reference: TATL elimination_star.ml — verif_edge
+ */
+function verifEdge(
+  state: State,
+  edgeLabel: MoveVector,
+  ev: FormulaTuple,
+  numEv: number,
   allAgents: Coalition
 ): boolean {
-  // Agents unavoidable: always fires — all edges are consistent
-  if (nextFormulaIndex.type === "agents") {
-    return true;
+  const info = state as State & Partial<StateNextInfo>;
+  const nbPos = info._nbPos ?? 0;
+  const nbNeg = info._nbNeg ?? 0;
+
+  // Convert edge label (move vector numbers) to (agent, move) pairs
+  const movec: Array<[Agent, number]> = allAgents.map((a, i) => [a, edgeLabel[i]!]);
+
+  if (ev.frm.kind === "coal") {
+    // Enforceable: all agents in coalition must play numEv
+    const la = ev.frm.coalition;
+    return movec.every(([a, m]) => {
+      if (la.includes(a)) return m === numEv;
+      return true;
+    });
+  } else if (ev.frm.kind === "cocoal") {
+    const la = ev.frm.coalition;
+    if (coalitionEqual(la, allAgents)) {
+      // Agents unavoidable: always consistent
+      return true;
+    }
+    // Proper unavoidable
+    const coSigma = functionCoSigma(movec, nbPos, nbNeg);
+    const nSigma = functionNSigma(movec, nbPos);
+    const complement = coalitionComplement(la, allAgents);
+    return coSigma === numEv && complement.every(a => nSigma.has(a));
+  }
+  return false;
+}
+
+/**
+ * Get the number/index of the next-time formula for an eventuality in a state.
+ *
+ * Reference: TATL elimination_star.ml — get_num_next_ev
+ */
+function getNumNextEv(
+  nextFrm: StateFormula,
+  state: State,
+  allAgents: Coalition
+): number {
+  const info = state as State & Partial<StateNextInfo>;
+  const lstNextPos = info._nextPos ?? [];
+  const lstNextNeg = info._nextNeg ?? [];
+
+  if (nextFrm.kind === "coal") {
+    // Look for Coal(la, Next(State(nextFrm))) in enforceable list
+    const wrappedKey = stateKey(Coal(nextFrm.coalition, PNext(PState(nextFrm))));
+    for (const [n, f] of lstNextPos) {
+      if (stateKey(f) === wrappedKey) return n;
+    }
+    return -2; // not found
+  } else if (nextFrm.kind === "cocoal") {
+    if (coalitionEqual(nextFrm.coalition, allAgents)) {
+      return -1; // agents unavoidable
+    }
+    // Look for CoCoal(la, Next(State(nextFrm))) in proper unavoidable list
+    const wrappedKey = stateKey(CoCoal(nextFrm.coalition, PNext(PState(nextFrm))));
+    for (const [n, f] of lstNextNeg) {
+      if (stateKey(f) === wrappedKey) return n;
+    }
+    return -2; // not found
+  }
+  return -2;
+}
+
+/**
+ * Get successor prestates to verify for eventuality realization.
+ * Returns prestates that:
+ * - Are reached via edges consistent with the eventuality
+ * - Contain the eventuality's next formula
+ * - Are not suppressed
+ *
+ * Reference: TATL elimination_star.ml — get_succ_to_be_verified_simpl
+ */
+function getSuccToBeVerified(
+  ev: FormulaTuple,
+  stateId: NodeId,
+  state: State,
+  edges: SolidEdge[],
+  allAgents: Coalition,
+  suppressed: Set<NodeId>
+): NodeId[] {
+  const numEv = getNumNextEv(ev.nextFrm, state, allAgents);
+  if (numEv === -2) return [];
+  if (!isEventuality(ev.nextFrm)) return [];
+
+  const result: NodeId[] = [];
+  const seen = new Set<NodeId>();
+
+  for (const edge of edges) {
+    if (edge.from !== stateId) continue;
+    if (!edge.viaPrestate) continue;
+    if (suppressed.has(edge.viaPrestate)) continue;
+
+    const prestateId = edge.viaPrestate;
+    if (seen.has(prestateId)) continue;
+
+    // Check if the edge is consistent with the eventuality
+    if (numEv !== -1 && !verifEdge(state, edge.label, ev, numEv, allAgents)) {
+      continue;
+    }
+
+    seen.add(prestateId);
+    result.push(prestateId);
   }
 
-  // Count enforceable / proper unavoidable next-time formulas (three-category)
-  let m = 0;
-  let l = 0;
-  for (const f of state.formulas) {
-    if (isPositiveNext(f)) {
-      m++;
-    } else if (isNegativeNext(f)) {
-      const isAgentsUnav = f.kind === "not" && f.sub.kind === "next" &&
-        coalitionEqual(normalizeCoalition([...f.sub.coalition]), allAgents);
-      if (!isAgentsUnav) l++;
+  return result;
+}
+
+/**
+ * Get successor states from a prestate for eventuality verification.
+ *
+ * Reference: TATL elimination_star.ml — get_succ_prestates
+ */
+function getSuccPrestates(
+  ev: FormulaTuple,
+  prestateId: NodeId,
+  edges: SolidEdge[],
+  states: Map<NodeId, State>,
+  suppressed: Set<NodeId>
+): Array<{ state: State; evTuple: FormulaTuple }> {
+  const result: Array<{ state: State; evTuple: FormulaTuple }> = [];
+  const seen = new Set<NodeId>();
+
+  for (const edge of edges) {
+    // Find edges where the viaPrestate is our prestate (these are state->state edges)
+    if (edge.viaPrestate !== prestateId) continue;
+    if (suppressed.has(edge.to)) continue;
+    if (seen.has(edge.to)) continue;
+    seen.add(edge.to);
+
+    const succState = states.get(edge.to);
+    if (!succState) continue;
+
+    // Find the matching eventuality tuple in the successor state
+    const evNext = getTuple(ev.nextFrm, succState.tuples);
+    if (evNext) {
+      result.push({ state: succState, evTuple: evNext });
     }
   }
 
-  if (nextFormulaIndex.type === "positive") {
-    if (nextFormula.kind !== "next") return false;
-    return inD_positive(sigma, nextFormula.coalition, nextFormulaIndex.index, allAgents, m);
-  } else {
-    if (nextFormula.kind !== "not" || nextFormula.sub.kind !== "next") return false;
-    const A = nextFormula.sub.coalition;
-    return inD_negative(sigma, A, nextFormulaIndex.index, allAgents, m, l);
+  return result;
+}
+
+/**
+ * DFS verification of eventuality realization through successor chains.
+ *
+ * For a state s with an eventuality ev and residual path formula:
+ * 1. Get consistent successor prestates
+ * 2. For EACH prestate (universal), find at least one successor state (existential)
+ *    where either:
+ *    - whatfalse reduces the residual to State(Top) (realized), or
+ *    - recursive verification succeeds
+ *
+ * Reference: TATL elimination_star.ml — verif_succ (the core DFS with memoization)
+ */
+function verifSucc(
+  ev: FormulaTuple,
+  stateId: NodeId,
+  state: State,
+  path: PathFormula,
+  states: Map<NodeId, State>,
+  edges: SolidEdge[],
+  allAgents: Coalition,
+  suppressed: Set<NodeId>,
+  hPst: Map<string, PstEntry>,
+  hSt: Set<string>
+): boolean {
+  // Get consistent successor prestates
+  const lstPrestateSucc = getSuccToBeVerified(ev, stateId, state, edges, allAgents, suppressed);
+
+  // For each prestate (universal): must find one successor state that works
+  return verifPrestate(lstPrestateSucc, ev, path, states, edges, allAgents, suppressed, hPst, hSt);
+}
+
+/**
+ * Universal check over prestates: ALL prestates must be satisfiable.
+ *
+ * Reference: TATL elimination_star.ml — verif_prestate (inner function of verif_succ)
+ */
+function verifPrestate(
+  lstPrestate: NodeId[],
+  ev: FormulaTuple,
+  path: PathFormula,
+  states: Map<NodeId, State>,
+  edges: SolidEdge[],
+  allAgents: Coalition,
+  suppressed: Set<NodeId>,
+  hPst: Map<string, PstEntry>,
+  hSt: Set<string>
+): boolean {
+  for (let i = 0; i < lstPrestate.length; i++) {
+    const pId = lstPrestate[i]!;
+    const pKey = memoKeyPst(pId, path);
+
+    // Check if we've already explored this prestate with this path
+    const cached = hPst.get(pKey);
+    if (cached) {
+      if (cached.value === 1) {
+        // Already verified OK
+        continue;
+      }
+      if (cached.value === 2) {
+        // Already verified FAIL
+        return false;
+      }
+      // value === 0: still exploring, try next state in list
+      if (cached.lst.length === 0) {
+        hPst.set(pKey, { value: 2, lst: [], lst2: [] });
+        return false;
+      }
+
+      // Try next state from the cached list
+      const stateV = cached.lst[0]!;
+      const tail = cached.lst.slice(1);
+      const sKey = memoKeySt(stateV.state.id, path);
+
+      if (hSt.has(sKey)) {
+        // Already visited this state — skip and try another
+        const newTail = tail;
+        const newLst2 = cached.lst2.length === 0 && tail.length === 0 ? [] : [...cached.lst2, stateV];
+        hPst.set(pKey, { value: 0, lst: newTail, lst2: newLst2 });
+        // Retry this prestate with remaining states
+        i--; // retry current prestate
+        continue;
+      }
+
+      hSt.add(sKey);
+      hPst.set(pKey, { value: 0, lst: tail, lst2: cached.lst2 });
+
+      if (verifState(stateV.state, stateV.evTuple, path, states, edges, allAgents, suppressed, hPst, hSt)) {
+        hPst.set(pKey, { value: 1, lst: tail, lst2: cached.lst2 });
+        continue; // This prestate is OK, move to next
+      } else {
+        // Retry from the beginning of the full prestate list
+        return verifPrestate(lstPrestate, ev, path, states, edges, allAgents, suppressed, hPst, hSt);
+      }
+    } else {
+      // First visit: get successor states from this prestate
+      const lstSucc = getSuccPrestates(ev, pId, edges, states, suppressed);
+
+      if (lstSucc.length === 0) {
+        return false; // No successor states — fail
+      }
+
+      const stateV = lstSucc[0]!;
+      const tail = lstSucc.slice(1);
+      const sKey = memoKeySt(stateV.state.id, path);
+
+      if (hSt.has(sKey)) {
+        // Already visited this state — skip
+        const newLst2 = tail.length === 0 ? [] : [stateV];
+        hPst.set(pKey, { value: 0, lst: tail, lst2: newLst2 });
+        // Retry this prestate
+        i--;
+        continue;
+      }
+
+      hPst.set(pKey, { value: 0, lst: tail, lst2: [] });
+      hSt.add(sKey);
+
+      if (verifState(stateV.state, stateV.evTuple, path, states, edges, allAgents, suppressed, hPst, hSt)) {
+        hPst.set(pKey, { value: 1, lst: tail, lst2: [] });
+        continue; // This prestate OK
+      } else {
+        // Retry from the beginning
+        return verifPrestate(lstPrestate, ev, path, states, edges, allAgents, suppressed, hPst, hSt);
+      }
+    }
   }
+
+  return true; // All prestates verified
+}
+
+/**
+ * Existential check over states: at least ONE state must realize the eventuality.
+ *
+ * Reference: TATL elimination_star.ml — verif_state (inner function of verif_succ)
+ */
+function verifState(
+  s: State,
+  evTuple: FormulaTuple,
+  path: PathFormula,
+  states: Map<NodeId, State>,
+  edges: SolidEdge[],
+  allAgents: Coalition,
+  suppressed: Set<NodeId>,
+  hPst: Map<string, PstEntry>,
+  hSt: Set<string>
+): boolean {
+  const ensFrm = s.formulas;
+  const residual = whatfalse(path, ensFrm, evTuple.pathFrm);
+
+  if (residual.kind === "state" && residual.sub.kind === "top") {
+    // Fully realized!
+    return true;
+  }
+
+  // Continue search with the new residual
+  return verifSucc(evTuple, s.id, s, residual, states, edges, allAgents, suppressed, hPst, hSt);
 }

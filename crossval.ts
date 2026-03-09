@@ -11,8 +11,7 @@ import { parseFormula } from "./src/core/parser.ts";
 import { runTableau } from "./src/core/tableau.ts";
 import { execSync } from "child_process";
 
-const NIX_SHELL = "/nix/store/jsk4cy6azq4cgf2j2qs1lpvh0mm38avb-nix-2.24.4/bin/nix-shell";
-const TATL_DIR = `${import.meta.dir}/TATL`;
+const TATL_EXE = `${import.meta.dir}/TATL/_build/default/tatl.exe`;
 
 // Convert our syntax to TATL syntax:
 // - agents: a→0, b→1, c→2
@@ -41,8 +40,8 @@ function runTATL(formula: string): boolean | null {
   const tatlFormula = toTATL(formula);
   try {
     const result = execSync(
-      `${NIX_SHELL} shell.nix --run './_build/default/tatl.exe -o -f "${tatlFormula}"'`,
-      { cwd: TATL_DIR, timeout: 10000, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] }
+      `${TATL_EXE} -o -f "${tatlFormula}"`,
+      { timeout: 30000, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] }
     );
     if (result.includes("satisfiable") && !result.includes("unsatisfiable")) return true;
     if (result.includes("unsatisfiable")) return false;
@@ -124,6 +123,49 @@ function* generateFormulas(): Generator<string> {
         yield `(${c1}G ~${p} & ${c2}(${p} U q))`;
       }
     }
+  }
+
+  // Layer 5: ATL*-specific — complex path formulas inside coalitions
+  // These are genuine ATL* formulas (not expressible in basic ATL)
+  for (const c of coalitions) {
+    for (const p of atoms) {
+      // Combined path formulas
+      yield `${c}(G ${p} & F ~${p})`;           // always p AND eventually ~p (UNSAT)
+      yield `${c}(F ${p} & F ~${p})`;           // eventually p AND eventually ~p
+      yield `${c}(G ${p} | F ~${p})`;           // always p OR eventually ~p
+      yield `${c}(G ${p} & G ~${p})`;           // always p AND always ~p (UNSAT path)
+      yield `${c}(X ${p} & X ~${p})`;           // next p AND next ~p (UNSAT)
+      yield `${c}(X ${p} | X ~${p})`;           // next p OR next ~p (tautological path)
+      yield `${c}(G ${p} & X ~${p})`;           // always p AND next ~p (UNSAT)
+      yield `${c}(F ${p} & G ~${p})`;           // eventually p AND always ~p (UNSAT)
+
+      // Negated complex path formulas
+      yield `~${c}(G ${p} & F ~${p})`;
+      yield `~${c}(F ${p} & F ~${p})`;
+
+      // GF and FG patterns
+      yield `${c}(G F ${p})`;                    // infinitely often p
+      yield `${c}(F G ${p})`;                    // eventually always p
+      yield `~${c}(G F ${p})`;
+      yield `~${c}(F G ${p})`;
+
+      // Mixed with Until
+      for (const q of atoms) {
+        yield `${c}(G ${p} & (${p} U ${q}))`;
+        yield `${c}((${p} U ${q}) | G ~${q})`;
+        yield `${c}(X ${p} & (${p} U ${q}))`;
+      }
+    }
+  }
+
+  // Layer 6: Conjunctions involving ATL*-specific formulas
+  for (const c of ["<<a>>", "<<b>>"]) {
+    yield `(${c}(G p & F q) & ${c}(G q & F p))`;
+    yield `(${c}(G p) & ${c}(F ~p))`;           // different strategies — SAT
+    yield `(${c}G p & ~${c}G p)`;                // contradiction — UNSAT
+    yield `(${c}(G p & F ~p) & q)`;              // UNSAT (inner path unsat)
+    yield `(${c}(F p) & ${c}(F ~p))`;            // SAT
+    yield `(${c}(G F p) & ${c}(G F ~p))`;        // SAT (different strategies)
   }
 }
 

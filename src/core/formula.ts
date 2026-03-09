@@ -1,54 +1,266 @@
 /**
- * Formula utilities: subformulas, closure, extended closure, patent inconsistency.
+ * Formula utilities for ATL* two-sorted formulas.
+ *
+ * Provides:
+ * - Agent/coalition collection
+ * - Patent inconsistency check
+ * - Eventuality detection (recursive, path-level)
+ * - Subformula collection
+ * - Literal/primitive checks
  *
  * References:
- * - Definition 4.4 (p.17): Closure of a formula
- * - Definition 4.5 (p.17): Extended closure
- * - Definition 4.3 (p.16): Patent inconsistency
- * - Goranko & Shkatov 2009
+ * - TATL global.ml — is_eventuality, contains_eventuality_operator,
+ *   is_inconsistant, search_agent_state/path
+ * - Goranko & Shkatov 2009 — ATL tableau definitions
  */
 
 import {
-  type Formula,
+  type StateFormula,
+  type PathFormula,
   type Coalition,
   type Agent,
-  FormulaSet,
-  Not,
-  Next,
-  And,
-  formulaKey,
-  coalitionSubset,
+  type FormulaTuple,
+  STop, SBot, Neg,
+  StateFormulaSet,
+  PathFormulaSet,
+  stateKey,
+  pathKey,
 } from "./types.ts";
-import { classifyFormula } from "./classify.ts";
+
+// ============================================================
+// Agent collection
+// ============================================================
 
 /**
- * Get all subformulas of a formula (Sub(ψ) in the paper).
+ * Collect all agents mentioned in a state formula.
  */
-export function subformulas(f: Formula): FormulaSet {
-  const result = new FormulaSet();
-  function collect(g: Formula): void {
+export function agentsInState(f: StateFormula): Set<Agent> {
+  const result = new Set<Agent>();
+  function collectState(g: StateFormula): void {
+    switch (g.kind) {
+      case "top": case "bot": case "atom": break;
+      case "neg": collectState(g.sub); break;
+      case "and": collectState(g.left); collectState(g.right); break;
+      case "or": collectState(g.left); collectState(g.right); break;
+      case "coal": case "cocoal":
+        for (const a of g.coalition) result.add(a);
+        collectPath(g.path);
+        break;
+    }
+  }
+  function collectPath(g: PathFormula): void {
+    switch (g.kind) {
+      case "state": collectState(g.sub); break;
+      case "negp": collectPath(g.sub); break;
+      case "andp": collectPath(g.left); collectPath(g.right); break;
+      case "orp": collectPath(g.left); collectPath(g.right); break;
+      case "next": collectPath(g.sub); break;
+      case "always": collectPath(g.sub); break;
+      case "until": collectPath(g.left); collectPath(g.right); break;
+    }
+  }
+  collectState(f);
+  return result;
+}
+
+/**
+ * Collect all agents mentioned in a set of state formulas.
+ */
+export function agentsInStateSet(fs: StateFormulaSet): Set<Agent> {
+  const result = new Set<Agent>();
+  for (const f of fs) {
+    for (const a of agentsInState(f)) result.add(a);
+  }
+  return result;
+}
+
+// ============================================================
+// Patent inconsistency
+// ============================================================
+
+/**
+ * Check if a state formula is a literal: Top, Bot, Prop, Neg(Prop).
+ */
+export function isLiteral(f: StateFormula): boolean {
+  return f.kind === "top" || f.kind === "bot" || f.kind === "atom" ||
+    (f.kind === "neg" && f.sub.kind === "atom");
+}
+
+/**
+ * Check if a set of state formulas is patently inconsistent.
+ *
+ * A set is patently inconsistent if:
+ * - It contains both Top and Bot
+ * - It contains both p and ¬p for some proposition p
+ *
+ * Reference: TATL global.ml is_inconsistant
+ */
+export function isPatentlyInconsistent(fs: StateFormulaSet): boolean {
+  // Collect literals
+  const literals = new StateFormulaSet();
+  for (const f of fs) {
+    if (isLiteral(f)) literals.add(f);
+  }
+
+  // Check Top ∧ Bot
+  if (literals.has(STop) && literals.has(SBot)) return true;
+
+  // Check p ∧ ¬p
+  for (const f of literals) {
+    if (literals.has(Neg(f))) return true;
+  }
+
+  return false;
+}
+
+/**
+ * Check if a set of FormulaTuples is patently inconsistent.
+ * Extracts the .frm components and checks for contradictions.
+ *
+ * Reference: TATL global.ml is_inconsistant_tuple
+ */
+export function isPatentlyInconsistentTuples(tuples: Iterable<FormulaTuple>): boolean {
+  const literals = new StateFormulaSet();
+  for (const t of tuples) {
+    if (isLiteral(t.frm)) literals.add(t.frm);
+  }
+
+  if (literals.has(STop) && literals.has(SBot)) return true;
+
+  for (const f of literals) {
+    if (literals.has(Neg(f))) return true;
+  }
+
+  return false;
+}
+
+// ============================================================
+// Eventuality detection
+// ============================================================
+
+/**
+ * Check if a path formula contains an eventuality operator (Until).
+ * Recursively checks through path connectives.
+ *
+ * Reference: TATL global.ml contains_eventuality_operator
+ */
+export function containsEventualityOperator(path: PathFormula): boolean {
+  switch (path.kind) {
+    case "state": return false;
+    case "until": return true;
+    case "andp": return containsEventualityOperator(path.left) || containsEventualityOperator(path.right);
+    case "orp": return containsEventualityOperator(path.left) || containsEventualityOperator(path.right);
+    case "next": return containsEventualityOperator(path.sub);
+    case "always": return containsEventualityOperator(path.sub);
+    case "negp": return containsEventualityOperator(path.sub);
+  }
+}
+
+/**
+ * Check if a state formula is an eventuality.
+ *
+ * In ATL*, a formula is an eventuality if it's a Coal/CoCoal whose
+ * path formula contains an Until operator (and it's not a simple
+ * next-time formula).
+ *
+ * Reference: TATL global.ml is_eventuality
+ */
+export function isEventuality(f: StateFormula): boolean {
+  if (f.kind === "coal" || f.kind === "cocoal") {
+    // Coal(_, Next(_)) and CoCoal(_, Next(_)) are NOT eventualities
+    if (f.path.kind === "next") return false;
+    return containsEventualityOperator(f.path);
+  }
+  return false;
+}
+
+/**
+ * Get all eventualities from a state formula set.
+ */
+export function getEventualities(fs: StateFormulaSet): StateFormula[] {
+  return fs.toArray().filter(isEventuality);
+}
+
+/**
+ * Get the coalition of an eventuality.
+ */
+export function eventualityCoalition(f: StateFormula): Coalition {
+  if (f.kind === "coal" || f.kind === "cocoal") {
+    return f.coalition;
+  }
+  throw new Error("Not a coalition formula");
+}
+
+// ============================================================
+// Next-time formula checks
+// ============================================================
+
+/**
+ * Check if a state formula is a positive next-time formula: Coal(A, Next(State(φ)))
+ */
+export function isEnforceableNext(f: StateFormula): boolean {
+  return f.kind === "coal" && f.path.kind === "next" && f.path.sub.kind === "state";
+}
+
+/**
+ * Check if a state formula is an unavoidable next-time formula: CoCoal(A, Next(State(φ)))
+ */
+export function isUnavoidableNext(f: StateFormula): boolean {
+  return f.kind === "cocoal" && f.path.kind === "next" && f.path.sub.kind === "state";
+}
+
+/**
+ * Check if a state formula is any next-time formula (enforceable or unavoidable).
+ */
+export function isNextTime(f: StateFormula): boolean {
+  return isEnforceableNext(f) || isUnavoidableNext(f);
+}
+
+/**
+ * Extract the inner state formula from a next-time formula.
+ * Coal(A, Next(State(φ))) → φ
+ * CoCoal(A, Next(State(φ))) → φ
+ */
+export function nextTimeInner(f: StateFormula): StateFormula {
+  if ((f.kind === "coal" || f.kind === "cocoal") &&
+      f.path.kind === "next" && f.path.sub.kind === "state") {
+    return f.path.sub.sub;
+  }
+  throw new Error("Not a next-time formula");
+}
+
+// ============================================================
+// Subformula collection
+// ============================================================
+
+/**
+ * Get all state-level subformulas of a state formula.
+ */
+export function subformulasState(f: StateFormula): StateFormulaSet {
+  const result = new StateFormulaSet();
+  function collect(g: StateFormula): void {
     if (result.has(g)) return;
     result.add(g);
     switch (g.kind) {
-      case "atom":
+      case "top": case "bot": case "atom": break;
+      case "neg": collect(g.sub); break;
+      case "and": collect(g.left); collect(g.right); break;
+      case "or": collect(g.left); collect(g.right); break;
+      case "coal": case "cocoal":
+        // Also collect state formulas inside path formulas
+        collectFromPath(g.path);
         break;
-      case "not":
-        collect(g.sub);
-        break;
-      case "and":
-        collect(g.left);
-        collect(g.right);
-        break;
-      case "next":
-        collect(g.sub);
-        break;
-      case "always":
-        collect(g.sub);
-        break;
-      case "until":
-        collect(g.left);
-        collect(g.right);
-        break;
+    }
+  }
+  function collectFromPath(g: PathFormula): void {
+    switch (g.kind) {
+      case "state": collect(g.sub); break;
+      case "negp": collectFromPath(g.sub); break;
+      case "andp": collectFromPath(g.left); collectFromPath(g.right); break;
+      case "orp": collectFromPath(g.left); collectFromPath(g.right); break;
+      case "next": collectFromPath(g.sub); break;
+      case "always": collectFromPath(g.sub); break;
+      case "until": collectFromPath(g.left); collectFromPath(g.right); break;
     }
   }
   collect(f);
@@ -58,254 +270,10 @@ export function subformulas(f: Formula): FormulaSet {
 /**
  * Get all subformulas of all formulas in a set.
  */
-export function subformulasOfSet(fs: FormulaSet): FormulaSet {
-  const result = new FormulaSet();
+export function subformulasOfSet(fs: StateFormulaSet): StateFormulaSet {
+  const result = new StateFormulaSet();
   for (const f of fs) {
-    for (const sf of subformulas(f)) {
-      result.add(sf);
-    }
+    for (const sf of subformulasState(f)) result.add(sf);
   }
   return result;
-}
-
-/**
- * Compute the closure of a formula (Definition 4.4, p.17).
- *
- * cl(θ) is the smallest set containing θ that is closed under:
- * 1. α-components (if α ∈ cl(θ), then all α_i ∈ cl(θ))
- * 2. β-components (if β ∈ cl(θ), then all β_i ∈ cl(θ))
- *
- * For ATL, this means e.g.:
- * - If ⟨⟨A⟩⟩□ϕ ∈ cl(θ), then ϕ ∈ cl(θ) and ⟨⟨A⟩⟩○⟨⟨A⟩⟩□ϕ ∈ cl(θ)
- * - If ⟨⟨A⟩⟩(ϕ U ψ) ∈ cl(θ), then ψ ∈ cl(θ) and (ϕ ∧ ⟨⟨A⟩⟩○⟨⟨A⟩⟩(ϕ U ψ)) ∈ cl(θ)
- * - etc.
- */
-export function closure(f: Formula): FormulaSet {
-  const result = new FormulaSet();
-  const worklist: Formula[] = [f];
-
-  while (worklist.length > 0) {
-    const current = worklist.pop()!;
-    if (result.has(current)) continue;
-    result.add(current);
-
-    // Classify and add components
-    const cls = classifyFormula(current);
-    if (cls.type === "alpha" || cls.type === "beta") {
-      for (const comp of cls.components) {
-        if (!result.has(comp)) {
-          worklist.push(comp);
-        }
-      }
-    }
-
-    // For ¬⟨⟨A⟩⟩○ϕ, we need ¬ϕ in the closure as well
-    // (the Next rule needs access to the inner formula's negation)
-    if (current.kind === "not" && current.sub.kind === "next") {
-      const negSub = Not(current.sub.sub);
-      if (!result.has(negSub)) {
-        worklist.push(negSub);
-      }
-    }
-  }
-
-  return result;
-}
-
-/**
- * Compute the closure of a set of formulas.
- * cl(Δ) = ∪{cl(ϕ) | ϕ ∈ Δ}
- */
-export function closureOfSet(fs: FormulaSet): FormulaSet {
-  const result = new FormulaSet();
-  for (const f of fs) {
-    for (const g of closure(f)) {
-      result.add(g);
-    }
-  }
-  return result;
-}
-
-/**
- * Compute the extended closure of a formula (Definition 4.5, p.17).
- * ecl(θ) = {ϕ, ¬ϕ | ϕ ∈ cl(θ)}
- */
-export function extendedClosure(f: Formula): FormulaSet {
-  const cl = closure(f);
-  const result = new FormulaSet();
-  for (const g of cl) {
-    result.add(g);
-    result.add(Not(g));
-  }
-  return result;
-}
-
-/**
- * Compute the extended closure of a set of formulas.
- */
-export function extendedClosureOfSet(fs: FormulaSet): FormulaSet {
-  const cl = closureOfSet(fs);
-  const result = new FormulaSet();
-  for (const g of cl) {
-    result.add(g);
-    result.add(Not(g));
-  }
-  return result;
-}
-
-/**
- * Check if a set of formulas is patently inconsistent (Definition 4.3, p.16).
- * A set is patently inconsistent if it contains both ϕ and ¬ϕ,
- * or if it contains ~_top (since _top is our tautology constant).
- */
-export function isPatentlyInconsistent(fs: FormulaSet): boolean {
-  for (const f of fs) {
-    // ~_top is always inconsistent: _top is the tautology constant
-    if (f.kind === "not" && f.sub.kind === "atom" && f.sub.name === "_top") {
-      return true;
-    }
-    if (f.kind === "not") {
-      if (fs.has(f.sub)) return true;
-    } else {
-      if (fs.has(Not(f))) return true;
-    }
-  }
-  return false;
-}
-
-/**
- * Collect all agents mentioned in a formula.
- */
-export function agentsInFormula(f: Formula): Set<Agent> {
-  const result = new Set<Agent>();
-  function collect(g: Formula): void {
-    switch (g.kind) {
-      case "atom":
-        break;
-      case "not":
-        collect(g.sub);
-        break;
-      case "and":
-        collect(g.left);
-        collect(g.right);
-        break;
-      case "next":
-        for (const a of g.coalition) result.add(a);
-        collect(g.sub);
-        break;
-      case "always":
-        for (const a of g.coalition) result.add(a);
-        collect(g.sub);
-        break;
-      case "until":
-        for (const a of g.coalition) result.add(a);
-        collect(g.left);
-        collect(g.right);
-        break;
-    }
-  }
-  collect(f);
-  return result;
-}
-
-/**
- * Collect all agents mentioned in a set of formulas.
- */
-export function agentsInFormulaSet(fs: FormulaSet): Set<Agent> {
-  const result = new Set<Agent>();
-  for (const f of fs) {
-    for (const a of agentsInFormula(f)) {
-      result.add(a);
-    }
-  }
-  return result;
-}
-
-/**
- * Check if a formula is an eventuality.
- *
- * In ATL, the eventualities are:
- * - ⟨⟨A⟩⟩(ϕ U ψ)  — needs ψ to eventually hold
- * - ¬⟨⟨A⟩⟩□ϕ       — needs ¬ϕ to eventually hold
- *
- * These are the formulas that require realization checking (E3 elimination).
- */
-export function isEventuality(f: Formula): boolean {
-  // ⟨⟨A⟩⟩(ϕ U ψ) is an eventuality
-  if (f.kind === "until") return true;
-
-  // ¬⟨⟨A⟩⟩□ϕ is an eventuality
-  if (f.kind === "not" && f.sub.kind === "always") return true;
-
-  return false;
-}
-
-/**
- * Get all eventualities from a formula set.
- */
-export function getEventualities(fs: FormulaSet): Formula[] {
-  return fs.toArray().filter(isEventuality);
-}
-
-/**
- * Get the "goal" of an eventuality — the formula that must eventually hold.
- * - ⟨⟨A⟩⟩(ϕ U ψ)  → ψ
- * - ¬⟨⟨A⟩⟩□ϕ       → ¬ϕ
- */
-export function eventualityGoal(f: Formula): Formula {
-  if (f.kind === "until") return f.right;
-  if (f.kind === "not" && f.sub.kind === "always") return Not(f.sub.sub);
-  throw new Error("Not an eventuality");
-}
-
-/**
- * Get the coalition associated with an eventuality.
- * - ⟨⟨A⟩⟩(ϕ U ψ)  → A
- * - ¬⟨⟨A⟩⟩□ϕ       → A
- */
-export function eventualityCoalition(f: Formula): Coalition {
-  if (f.kind === "until") return f.coalition;
-  if (f.kind === "not" && f.sub.kind === "always") return f.sub.coalition;
-  throw new Error("Not an eventuality");
-}
-
-/**
- * Get the next-time formula that the eventuality unfolds into.
- * This is the formula whose D-set determines which edges the
- * eventuality realization can follow.
- *
- * - ⟨⟨A⟩⟩(ϕ U ψ) unfolds into ⟨⟨A⟩⟩○⟨⟨A⟩⟩(ϕ U ψ) (positive)
- * - ¬⟨⟨A⟩⟩□ϕ unfolds into ¬⟨⟨A⟩⟩○⟨⟨A⟩⟩□ϕ (negative)
- */
-export function eventualityNextFormula(f: Formula): Formula {
-  if (f.kind === "until") {
-    // ⟨⟨A⟩⟩(ϕ U ψ) → ⟨⟨A⟩⟩○⟨⟨A⟩⟩(ϕ U ψ)
-    return Next(f.coalition, f);
-  }
-  if (f.kind === "not" && f.sub.kind === "always") {
-    // ¬⟨⟨A⟩⟩□ϕ → ¬⟨⟨A⟩⟩○⟨⟨A⟩⟩□ϕ
-    return Not(Next(f.sub.coalition, f.sub));
-  }
-  throw new Error("Not an eventuality");
-}
-
-/**
- * Check if a formula is a positive next-time formula: ⟨⟨A⟩⟩○ϕ
- */
-export function isPositiveNext(f: Formula): boolean {
-  return f.kind === "next";
-}
-
-/**
- * Check if a formula is a negative next-time formula: ¬⟨⟨A⟩⟩○ϕ
- */
-export function isNegativeNext(f: Formula): boolean {
-  return f.kind === "not" && f.sub.kind === "next";
-}
-
-/**
- * Check if a formula is any next-time formula (positive or negative).
- */
-export function isNextTime(f: Formula): boolean {
-  return isPositiveNext(f) || isNegativeNext(f);
 }

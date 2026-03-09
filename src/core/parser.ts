@@ -1,57 +1,51 @@
 /**
- * Recursive-descent parser for ATL formulas.
+ * Recursive-descent parser for ATL* formulas.
  *
- * Syntax (all ASCII, no special symbols needed):
+ * Two-sorted grammar:
  *
- *   atom       := [a-z][a-z0-9_]*   (except reserved: _top)
+ * State formulas (top level):
+ *   atom       := [a-z0-9][a-z0-9_]*
  *   coalition  := '<<' (agent (',' agent)*)? '>>'
- *   agent      := [a-z][a-z0-9_]*
+ *   cocoal     := '[[' (agent (',' agent)*)? ']]'
+ *   agent      := [a-z0-9][a-z0-9_]*
  *
  *   primary    := atom
- *              | '~' primary                    // negation
- *              | coalition 'X' primary          // next: <<A>>X ϕ
- *              | coalition 'G' primary          // always: <<A>>G ϕ
- *              | coalition 'F' primary          // eventually: <<A>>F ϕ (sugar for <<A>>(⊤ U ϕ))
- *              | coalition '(' expr 'U' expr ')'  // until: <<A>>(ϕ U ψ)
+ *              | '~' primary              // negation
+ *              | coalition pathExpr       // ⟨⟨A⟩⟩π
+ *              | cocoal pathExpr          // [[A]]π
  *              | '(' expr ')'
  *
  *   expr       := primary (('&' | '|' | '->') primary)*
  *
- * Sugar:
- *   ϕ | ψ        desugars to  ~(~ϕ & ~ψ)
- *   ϕ -> ψ       desugars to  ~(ϕ & ~ψ)
- *   <<A>>F ϕ     desugars to  <<A>>(_top U ϕ)
+ * Path formulas (after <<A>> or [[A]]):
+ *   pathPrimary := 'X' pathPrimary       // next
+ *               | 'G' pathPrimary        // always
+ *               | 'F' pathPrimary        // eventually (sugar for ⊤ U π)
+ *               | '~' pathPrimary        // path negation
+ *               | '(' pathExpr ')'       // grouping or until
+ *               | '(' pathExpr 'U' pathExpr ')'  // until
+ *               | atom                   // auto-lifted to State(Prop(x))
+ *               | coalition pathExpr     // nested coalition (auto-lifted)
+ *               | cocoal pathExpr        // nested co-coalition (auto-lifted)
  *
- * Operator precedence (high to low):
- *   ~ (prefix), <<A>>X/G/F/U (prefix), &, |, ->
+ *   pathExpr   := pathPrimary (('&' | '|' | '->' | 'U' | 'R') pathPrimary)*
  *
- * Examples:
- *   "p"
- *   "~p"
- *   "(p & q)"
- *   "(p | q)"
- *   "(p -> q)"
- *   "<<a>>X p"
- *   "<<a,b>>G p"
- *   "<<>>F p"
- *   "<<a>>(p U q)"
- *   "(<<a>>X p & ~<<b>>G q)"
+ * NNF is applied after parsing.
+ *
+ * Backward compatible: <<a>>G p, <<a>>(p U q), etc. all still work.
+ * New ATL* forms: <<a>>(Gp & Fq), <<a>>GFp, etc.
  */
 
 import {
-  type Formula,
+  type StateFormula,
+  type PathFormula,
   type Agent,
   type Coalition,
-  Atom,
-  Not,
-  And,
-  Or,
-  Implies,
-  Next,
-  Always,
-  Until,
-  Eventually,
+  Atom, Neg, SAnd, SOr, SImplies, Coal, CoCoal,
+  PState, PNeg, PAnd, POr, PNext, PAlways, PUntil, PEvent,
+  STop,
 } from "./types.ts";
+import { toNNF } from "./nnf.ts";
 
 class ParseError extends Error {
   constructor(message: string, public pos: number) {
@@ -68,9 +62,13 @@ class Parser {
     this.input = input;
   }
 
-  parse(): Formula {
+  // ============================================================
+  // State formula parsing (top level)
+  // ============================================================
+
+  parse(): StateFormula {
     this.skipWhitespace();
-    const result = this.parseExpr();
+    const result = this.parseStateExpr();
     this.skipWhitespace();
     if (this.pos < this.input.length) {
       throw new ParseError(
@@ -81,8 +79,8 @@ class Parser {
     return result;
   }
 
-  private parseExpr(): Formula {
-    let left = this.parsePrimary();
+  private parseStateExpr(): StateFormula {
+    let left = this.parseStatePrimary();
 
     while (true) {
       this.skipWhitespace();
@@ -91,18 +89,18 @@ class Parser {
       if (this.lookAhead("->")) {
         this.advance(2);
         this.skipWhitespace();
-        const right = this.parsePrimary();
-        left = Implies(left, right);
+        const right = this.parseStatePrimary();
+        left = SImplies(left, right);
       } else if (this.peek() === "|") {
         this.advance(1);
         this.skipWhitespace();
-        const right = this.parsePrimary();
-        left = Or(left, right);
+        const right = this.parseStatePrimary();
+        left = SOr(left, right);
       } else if (this.peek() === "&") {
         this.advance(1);
         this.skipWhitespace();
-        const right = this.parsePrimary();
-        left = And(left, right);
+        const right = this.parseStatePrimary();
+        left = SAnd(left, right);
       } else {
         break;
       }
@@ -111,40 +109,45 @@ class Parser {
     return left;
   }
 
-  private parsePrimary(): Formula {
+  private parseStatePrimary(): StateFormula {
     this.skipWhitespace();
 
     if (this.pos >= this.input.length) {
       throw new ParseError("Unexpected end of input", this.pos);
     }
 
-    const ch = this.peek();
+    const ch = this.peek()!;
 
     // Negation
     if (ch === "~" || ch === "!") {
       this.advance(1);
       this.skipWhitespace();
-      const sub = this.parsePrimary();
-      return Not(sub);
+      const sub = this.parseStatePrimary();
+      return Neg(sub);
     }
 
-    // Coalition operator: <<...>>
+    // Coalition operator: <<...>>π
     if (this.lookAhead("<<")) {
       return this.parseCoalitionOp();
+    }
+
+    // Co-coalition operator: [[...]]π
+    if (this.lookAhead("[[")) {
+      return this.parseCoCoalitionOp();
     }
 
     // Parenthesized expression
     if (ch === "(") {
       this.advance(1);
       this.skipWhitespace();
-      const inner = this.parseExpr();
+      const inner = this.parseStateExpr();
       this.skipWhitespace();
       this.expect(")");
       return inner;
     }
 
     // Atom
-    if (this.isAgentChar(ch!)) {
+    if (this.isAgentChar(ch)) {
       return Atom(this.parseAgent());
     }
 
@@ -155,9 +158,16 @@ class Parser {
   }
 
   /**
-   * Parse a coalition operator: <<A>>X ϕ, <<A>>G ϕ, <<A>>F ϕ, or <<A>>(ϕ U ψ)
+   * Parse <<A>>π — coalition with a path formula.
+   *
+   * The path formula after <<A>> is a "path primary" — it handles prefix
+   * operators (X, G, F, ~) and parenthesized expressions, but NOT infix
+   * operators (&, |, U). To use infix operators, wrap in parens:
+   *   <<a>>(G p & F q)    -- OK: parens contain the full expression
+   *   <<a>>G p & <<b>>F q -- OK: parses as (<<a>>G p) & (<<b>>F q)
+   *   <<a>>G p & F q      -- parses as (<<a>>G p) & (F q) -- F q is state-level
    */
-  private parseCoalitionOp(): Formula {
+  private parseCoalitionOp(): StateFormula {
     this.expect("<");
     this.expect("<");
     const coalition = this.parseCoalitionBody();
@@ -165,73 +175,157 @@ class Parser {
     this.expect(">");
     this.skipWhitespace();
 
-    if (this.pos >= this.input.length) {
-      throw new ParseError("Expected temporal operator (X, G, F, or '(... U ...)') after coalition", this.pos);
-    }
+    const path = this.parsePathPrimary();
+    return Coal(coalition, path);
+  }
 
-    const op = this.peek()!;
+  /**
+   * Parse [[A]]π — co-coalition with a path formula.
+   * Same scoping rules as <<A>>π.
+   */
+  private parseCoCoalitionOp(): StateFormula {
+    this.expect("[");
+    this.expect("[");
+    const coalition = this.parseCoalitionBody();
+    this.expect("]");
+    this.expect("]");
+    this.skipWhitespace();
 
-    if (op === "X") {
-      // <<A>>X ϕ
-      this.advance(1);
+    const path = this.parsePathPrimary();
+    return CoCoal(coalition, path);
+  }
+
+  // ============================================================
+  // Path formula parsing (after <<A>> or [[A]])
+  // ============================================================
+
+  private parsePathExpr(): PathFormula {
+    let left = this.parsePathPrimary();
+
+    while (true) {
       this.skipWhitespace();
-      const sub = this.parsePrimary();
-      return Next(coalition, sub);
-    }
+      if (this.pos >= this.input.length) break;
 
-    if (op === "G") {
-      // <<A>>G ϕ
-      this.advance(1);
-      this.skipWhitespace();
-      const sub = this.parsePrimary();
-      return Always(coalition, sub);
-    }
-
-    if (op === "F") {
-      // <<A>>F ϕ — sugar for <<A>>(⊤ U ϕ)
-      this.advance(1);
-      this.skipWhitespace();
-      const sub = this.parsePrimary();
-      return Eventually(coalition, sub);
-    }
-
-    if (op === "(") {
-      // <<A>>(ϕ U ψ)
-      this.advance(1);
-      this.skipWhitespace();
-      const left = this.parseExpr();
-      this.skipWhitespace();
-
-      // Expect 'U'
-      if (this.pos >= this.input.length || this.peek() !== "U") {
-        throw new ParseError(
-          `Expected 'U' in until expression at position ${this.pos}, got '${this.input[this.pos] ?? "EOF"}'`,
-          this.pos
-        );
+      if (this.lookAhead("->")) {
+        this.advance(2);
+        this.skipWhitespace();
+        const right = this.parsePathPrimary();
+        // π₁ → π₂ = ¬π₁ ∨ π₂
+        left = POr(PNeg(left), right);
+      } else if (this.peek() === "|") {
+        this.advance(1);
+        this.skipWhitespace();
+        const right = this.parsePathPrimary();
+        left = POr(left, right);
+      } else if (this.peek() === "&") {
+        this.advance(1);
+        this.skipWhitespace();
+        const right = this.parsePathPrimary();
+        left = PAnd(left, right);
+      } else if (this.peek() === "U" && !this.isAgentChar(this.input[this.pos + 1] ?? "")) {
+        // Infix U: π₁ U π₂
+        this.advance(1);
+        this.skipWhitespace();
+        const right = this.parsePathPrimary();
+        left = PUntil(left, right);
+      } else if (this.peek() === "R" && !this.isAgentChar(this.input[this.pos + 1] ?? "")) {
+        // Infix R (release): π₁ R π₂ — will be eliminated by NNF
+        // π₁ R π₂ ≡ ¬(¬π₁ U ¬π₂)
+        this.advance(1);
+        this.skipWhitespace();
+        const right = this.parsePathPrimary();
+        left = PNeg(PUntil(PNeg(left), PNeg(right)));
+      } else {
+        break;
       }
-      this.advance(1); // skip 'U'
-      this.skipWhitespace();
+    }
 
-      const right = this.parseExpr();
+    return left;
+  }
+
+  private parsePathPrimary(): PathFormula {
+    this.skipWhitespace();
+
+    if (this.pos >= this.input.length) {
+      throw new ParseError("Unexpected end of input in path formula", this.pos);
+    }
+
+    const ch = this.peek()!;
+
+    // Path negation
+    if (ch === "~" || ch === "!") {
+      this.advance(1);
+      this.skipWhitespace();
+      const sub = this.parsePathPrimary();
+      return PNeg(sub);
+    }
+
+    // Next: X π
+    if (ch === "X" && !this.isAgentChar(this.input[this.pos + 1] ?? "")) {
+      this.advance(1);
+      this.skipWhitespace();
+      const sub = this.parsePathPrimary();
+      return PNext(sub);
+    }
+
+    // Always: G π
+    if (ch === "G" && !this.isAgentChar(this.input[this.pos + 1] ?? "")) {
+      this.advance(1);
+      this.skipWhitespace();
+      const sub = this.parsePathPrimary();
+      return PAlways(sub);
+    }
+
+    // Eventually: F π (sugar for ⊤ U π)
+    if (ch === "F" && !this.isAgentChar(this.input[this.pos + 1] ?? "")) {
+      this.advance(1);
+      this.skipWhitespace();
+      const sub = this.parsePathPrimary();
+      return PEvent(sub);
+    }
+
+    // Parenthesized path expression (may contain U)
+    if (ch === "(") {
+      this.advance(1);
+      this.skipWhitespace();
+      const inner = this.parsePathExpr();
       this.skipWhitespace();
       this.expect(")");
-      return Until(coalition, left, right);
+      return inner;
+    }
+
+    // Nested coalition in path context → auto-lifted: <<A>>π becomes State(Coal(A, π))
+    if (this.lookAhead("<<")) {
+      const coal = this.parseCoalitionOp();
+      return PState(coal);
+    }
+
+    // Nested co-coalition in path context → auto-lifted
+    if (this.lookAhead("[[")) {
+      const cocoal = this.parseCoCoalitionOp();
+      return PState(cocoal);
+    }
+
+    // Atom in path context → auto-lifted: p becomes State(Prop(p))
+    if (this.isAgentChar(ch)) {
+      const name = this.parseAgent();
+      return PState(Atom(name));
     }
 
     throw new ParseError(
-      `Expected temporal operator (X, G, F, or '(... U ...)') after '>>', got '${op}' at position ${this.pos}`,
+      `Unexpected character '${ch}' at position ${this.pos} in path formula`,
       this.pos
     );
   }
 
-  /**
-   * Parse the body of a coalition: empty or comma-separated agent names.
-   * Does NOT consume the >> delimiters.
-   */
+  // ============================================================
+  // Coalition body parsing
+  // ============================================================
+
   private parseCoalitionBody(): Coalition {
     this.skipWhitespace();
-    // Empty coalition: <<>>
-    if (this.lookAhead(">>")) {
+    // Empty coalition: <<>> or [[]]
+    if (this.lookAhead(">>") || this.lookAhead("]]")) {
       return [];
     }
 
@@ -246,6 +340,10 @@ class Parser {
     }
     return agents;
   }
+
+  // ============================================================
+  // Utilities
+  // ============================================================
 
   private parseAgent(): string {
     const start = this.pos;
@@ -292,9 +390,18 @@ class Parser {
 }
 
 /**
- * Parse a formula string into a Formula AST.
+ * Parse a formula string into a StateFormula AST, then apply NNF transformation.
  */
-export function parseFormula(input: string): Formula {
+export function parseFormula(input: string): StateFormula {
+  const parser = new Parser(input.trim());
+  const raw = parser.parse();
+  return toNNF(raw);
+}
+
+/**
+ * Parse a formula string WITHOUT applying NNF (useful for testing the parser).
+ */
+export function parseFormulaRaw(input: string): StateFormula {
   const parser = new Parser(input.trim());
   return parser.parse();
 }

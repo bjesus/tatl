@@ -1,242 +1,285 @@
 /**
- * Pretty-printer for ATL formulas.
- * Produces human-readable ASCII, Unicode, and LaTeX output.
+ * Pretty-printing for ATL* formulas: ASCII, Unicode, and LaTeX.
+ *
+ * Handles both state formulas and path formulas.
  */
 
-import { type Formula, type FormulaSet, type Coalition, type MoveVector } from "./types.ts";
+import {
+  type StateFormula,
+  type PathFormula,
+  type Coalition,
+  StateFormulaSet,
+  PathFormulaSet,
+} from "./types.ts";
 
-/**
- * Format a coalition for ASCII display.
- */
-function coalitionStr(c: Coalition): string {
+// ============================================================
+// ASCII printing (for CLI output and formula keys)
+// ============================================================
+
+export function printStateAscii(f: StateFormula): string {
+  switch (f.kind) {
+    case "top": return "_top";
+    case "bot": return "_bot";
+    case "atom": return f.name;
+    case "neg":
+      if (f.sub.kind === "and" || f.sub.kind === "or" || f.sub.kind === "neg")
+        return `~(${printStateAscii(f.sub)})`;
+      return `~${printStateAscii(f.sub)}`;
+    case "and":
+      return `(${printStateAscii(f.left)} & ${printStateAscii(f.right)})`;
+    case "or":
+      return `(${printStateAscii(f.left)} | ${printStateAscii(f.right)})`;
+    case "coal":
+      return `${coalAscii(f.coalition)}${printPathAscii(f.path)}`;
+    case "cocoal":
+      return `[[${f.coalition.join(",")}]]${printPathAscii(f.path)}`;
+  }
+}
+
+function coalAscii(c: Coalition): string {
   return `<<${c.join(",")}>>`;
 }
 
-/**
- * Print a formula to a human-readable ASCII string.
- * Uses the same syntax accepted by the parser.
- */
-export function printFormula(f: Formula): string {
+export function printPathAscii(f: PathFormula): string {
   switch (f.kind) {
-    case "atom":
-      return f.name;
-
-    case "not":
-      if (f.sub.kind === "and" || f.sub.kind === "not") {
-        return `~(${printFormula(f.sub)})`;
-      }
-      return `~${printFormula(f.sub)}`;
-
-    case "and":
-      return `(${printFormula(f.left)} & ${printFormula(f.right)})`;
-
+    case "state": return printStateAscii(f.sub);
+    case "negp":
+      if (needsPathParens(f.sub)) return `~(${printPathAscii(f.sub)})`;
+      return `~${printPathAscii(f.sub)}`;
+    case "andp":
+      return `(${printPathAscii(f.left)} & ${printPathAscii(f.right)})`;
+    case "orp":
+      return `(${printPathAscii(f.left)} | ${printPathAscii(f.right)})`;
     case "next":
-      return `${coalitionStr(f.coalition)}X ${printFormulaWrapped(f.sub)}`;
-
+      return `X ${printPathAsciiAtom(f.sub)}`;
     case "always":
-      return `${coalitionStr(f.coalition)}G ${printFormulaWrapped(f.sub)}`;
-
+      return `G ${printPathAsciiAtom(f.sub)}`;
     case "until":
-      return `${coalitionStr(f.coalition)}(${printFormula(f.left)} U ${printFormula(f.right)})`;
+      return `(${printPathAscii(f.left)} U ${printPathAscii(f.right)})`;
   }
 }
 
-/**
- * Print a formula, wrapping it in parens if it's compound.
- */
-function printFormulaWrapped(f: Formula): string {
-  if (f.kind === "and" || (f.kind === "not" && f.sub.kind === "and")) {
-    return `(${printFormula(f)})`;
-  }
-  return printFormula(f);
+function printPathAsciiAtom(f: PathFormula): string {
+  if (needsPathParens(f)) return `(${printPathAscii(f)})`;
+  return printPathAscii(f);
 }
 
-/**
- * Format a coalition for Unicode display.
- */
-function coalitionUnicode(c: Coalition): string {
-  return `\u27E8\u27E8${c.join(",")}\u27E9\u27E9`;
-}
-
-/**
- * Print a formula using Unicode mathematical symbols for display.
- */
-export function printFormulaUnicode(f: Formula): string {
-  switch (f.kind) {
-    case "atom":
-      if (f.name === "_top") return "\u22A4";
-      return f.name;
-
-    case "not":
-      if (f.sub.kind === "and" || f.sub.kind === "not") {
-        return `\u00AC(${printFormulaUnicode(f.sub)})`;
-      }
-      return `\u00AC${printFormulaUnicode(f.sub)}`;
-
-    case "and":
-      return `(${printFormulaUnicode(f.left)} \u2227 ${printFormulaUnicode(f.right)})`;
-
-    case "next":
-      return `${coalitionUnicode(f.coalition)}\u25CB ${printFormulaUnicodeWrapped(f.sub)}`;
-
-    case "always":
-      return `${coalitionUnicode(f.coalition)}\u25A1 ${printFormulaUnicodeWrapped(f.sub)}`;
-
-    case "until":
-      return `${coalitionUnicode(f.coalition)}(${printFormulaUnicode(f.left)} \u0055 ${printFormulaUnicode(f.right)})`;
-  }
-}
-
-function printFormulaUnicodeWrapped(f: Formula): string {
-  if (f.kind === "and" || (f.kind === "not" && f.sub.kind === "and")) {
-    return `(${printFormulaUnicode(f)})`;
-  }
-  return printFormulaUnicode(f);
-}
-
-/**
- * Print a formula set as a comma-separated list in braces.
- */
-export function printFormulaSet(fs: FormulaSet): string {
-  const items = fs.toArray().map(printFormula);
-  return `{${items.join(", ")}}`;
-}
-
-/**
- * Print a formula set using compact notation.
- */
-export function printFormulaSetCompact(fs: FormulaSet): string {
-  const items = fs.toArray().map(printFormula);
-  return `{${items.join(", ")}}`;
-}
-
-/**
- * Print a move vector as a string like "(0,1,2)".
- */
-export function printMoveVector(mv: MoveVector, agents?: Coalition): string {
-  if (agents && agents.length === mv.length) {
-    const parts = agents.map((a, i) => `${a}:${mv[i]}`);
-    return `(${parts.join(",")})`;
-  }
-  return `(${mv.join(",")})`;
+function needsPathParens(f: PathFormula): boolean {
+  return f.kind === "andp" || f.kind === "orp" || f.kind === "until" ||
+    (f.kind === "negp" && needsPathParens(f.sub));
 }
 
 // ============================================================
-// LaTeX output (for KaTeX rendering in browser)
+// Unicode printing (for display)
 // ============================================================
 
-/**
- * Map nesting level to LaTeX sizing commands for parentheses.
- */
-const PAREN_SIZES = ["", "\\big", "\\Big", "\\bigg", "\\Bigg"];
-
-function sizedOpen(level: number): string {
-  if (level <= 0) return "(";
-  const cmd = PAREN_SIZES[Math.min(level, PAREN_SIZES.length - 1)];
-  return `${cmd}(`;
-}
-
-function sizedClose(level: number): string {
-  if (level <= 0) return ")";
-  const cmd = PAREN_SIZES[Math.min(level, PAREN_SIZES.length - 1)];
-  return `${cmd})`;
-}
-
-/** Count the maximum parenthesis nesting depth of a formula. */
-function maxParenNesting(f: Formula): number {
+export function printStateUnicode(f: StateFormula): string {
   switch (f.kind) {
-    case "atom":
-      return 0;
-    case "not":
-      if (f.sub.kind === "and" || f.sub.kind === "not") {
-        return 1 + maxParenNesting(f.sub);
-      }
-      return maxParenNesting(f.sub);
+    case "top": return "⊤";
+    case "bot": return "⊥";
+    case "atom": return f.name;
+    case "neg":
+      if (f.sub.kind === "and" || f.sub.kind === "or" || f.sub.kind === "neg")
+        return `¬(${printStateUnicode(f.sub)})`;
+      return `¬${printStateUnicode(f.sub)}`;
     case "and":
-      return 1 + Math.max(maxParenNesting(f.left), maxParenNesting(f.right));
+      return `(${printStateUnicode(f.left)} ∧ ${printStateUnicode(f.right)})`;
+    case "or":
+      return `(${printStateUnicode(f.left)} ∨ ${printStateUnicode(f.right)})`;
+    case "coal":
+      return `⟨⟨${f.coalition.join(",")}⟩⟩${printPathUnicode(f.path)}`;
+    case "cocoal":
+      return `⟦${f.coalition.join(",")}⟧${printPathUnicode(f.path)}`;
+  }
+}
+
+export function printPathUnicode(f: PathFormula): string {
+  switch (f.kind) {
+    case "state": return printStateUnicode(f.sub);
+    case "negp":
+      if (needsPathParens(f.sub)) return `¬(${printPathUnicode(f.sub)})`;
+      return `¬${printPathUnicode(f.sub)}`;
+    case "andp":
+      return `(${printPathUnicode(f.left)} ∧ ${printPathUnicode(f.right)})`;
+    case "orp":
+      return `(${printPathUnicode(f.left)} ∨ ${printPathUnicode(f.right)})`;
     case "next":
-    case "always": {
-      const sub = f.sub;
-      if (sub.kind === "and" || (sub.kind === "not" && sub.sub.kind === "and")) {
-        return 1 + maxParenNesting(sub);
+      return `○${printPathUnicodeAtom(f.sub)}`;
+    case "always":
+      return `□${printPathUnicodeAtom(f.sub)}`;
+    case "until":
+      return `(${printPathUnicode(f.left)} U ${printPathUnicode(f.right)})`;
+  }
+}
+
+function printPathUnicodeAtom(f: PathFormula): string {
+  if (needsPathParens(f)) return `(${printPathUnicode(f)})`;
+  return printPathUnicode(f);
+}
+
+// ============================================================
+// LaTeX printing (for KaTeX rendering)
+// ============================================================
+
+function coalLatex(c: Coalition): string {
+  return `\\langle\\!\\langle ${c.length > 0 ? c.join(",") : "\\emptyset"} \\rangle\\!\\rangle`;
+}
+
+function cocoalLatex(c: Coalition): string {
+  return `\\llbracket ${c.length > 0 ? c.join(",") : "\\emptyset"} \\rrbracket`;
+}
+
+// Nesting depth for adaptive bracket sizing
+function stateDepth(f: StateFormula): number {
+  switch (f.kind) {
+    case "top": case "bot": case "atom": return 0;
+    case "neg":
+      if (f.sub.kind === "and" || f.sub.kind === "or" || f.sub.kind === "neg")
+        return 1 + stateDepth(f.sub);
+      return stateDepth(f.sub);
+    case "and": return 1 + Math.max(stateDepth(f.left), stateDepth(f.right));
+    case "or": return 1 + Math.max(stateDepth(f.left), stateDepth(f.right));
+    case "coal": case "cocoal": return pathDepth(f.path);
+  }
+}
+
+function pathDepth(f: PathFormula): number {
+  switch (f.kind) {
+    case "state": return stateDepth(f.sub);
+    case "negp": return needsPathParens(f.sub) ? 1 + pathDepth(f.sub) : pathDepth(f.sub);
+    case "andp": return 1 + Math.max(pathDepth(f.left), pathDepth(f.right));
+    case "orp": return 1 + Math.max(pathDepth(f.left), pathDepth(f.right));
+    case "next": case "always": return pathDepth(f.sub);
+    case "until": return 1 + Math.max(pathDepth(f.left), pathDepth(f.right));
+  }
+}
+
+const SIZES = ["", "\\big", "\\Big", "\\bigg", "\\Bigg"];
+
+function lp(depth: number): string {
+  if (depth <= 0) return "(";
+  return `${SIZES[Math.min(depth, SIZES.length - 1)]}(`;
+}
+
+function rp(depth: number): string {
+  if (depth <= 0) return ")";
+  return `${SIZES[Math.min(depth, SIZES.length - 1)]})`;
+}
+
+export function printStateLatex(f: StateFormula): string {
+  const d = stateDepth(f);
+  return stateLatexInner(f, d, 0);
+}
+
+function stateLatexInner(f: StateFormula, maxD: number, curD: number): string {
+  switch (f.kind) {
+    case "top": return "\\top";
+    case "bot": return "\\bot";
+    case "atom": return f.name;
+    case "neg": {
+      if (f.sub.kind === "and" || f.sub.kind === "or" || f.sub.kind === "neg") {
+        const dd = maxD - curD - 1;
+        return `\\neg${lp(dd)}${stateLatexInner(f.sub, maxD, curD + 1)}${rp(dd)}`;
       }
-      return maxParenNesting(sub);
+      return `\\neg ${stateLatexInner(f.sub, maxD, curD)}`;
     }
-    case "until":
-      return 1 + Math.max(maxParenNesting(f.left), maxParenNesting(f.right));
-  }
-}
-
-/**
- * LaTeX coalition: \langle\langle a,b \rangle\rangle
- */
-function coalitionLatex(c: Coalition): string {
-  const agents = c.length > 0 ? c.join(",") : "\\emptyset";
-  return `\\langle\\!\\langle ${agents} \\rangle\\!\\rangle`;
-}
-
-/**
- * Print a formula as a LaTeX string suitable for KaTeX rendering.
- */
-export function printFormulaLatex(f: Formula): string {
-  const total = maxParenNesting(f);
-  return printLatex(f, total, 0);
-}
-
-function printLatex(f: Formula, total: number, depth: number): string {
-  switch (f.kind) {
-    case "atom":
-      if (f.name === "_top") return "\\top";
-      return f.name;
-
-    case "not":
-      if (f.sub.kind === "and" || f.sub.kind === "not") {
-        const level = total - depth - 1;
-        return `\\neg${sizedOpen(level)}${printLatex(f.sub, total, depth + 1)}${sizedClose(level)}`;
-      }
-      return `\\neg ${printLatex(f.sub, total, depth)}`;
-
     case "and": {
-      const level = total - depth - 1;
-      return `${sizedOpen(level)}${printLatex(f.left, total, depth + 1)} \\wedge ${printLatex(f.right, total, depth + 1)}${sizedClose(level)}`;
+      const dd = maxD - curD - 1;
+      return `${lp(dd)}${stateLatexInner(f.left, maxD, curD + 1)} \\wedge ${stateLatexInner(f.right, maxD, curD + 1)}${rp(dd)}`;
     }
+    case "or": {
+      const dd = maxD - curD - 1;
+      return `${lp(dd)}${stateLatexInner(f.left, maxD, curD + 1)} \\vee ${stateLatexInner(f.right, maxD, curD + 1)}${rp(dd)}`;
+    }
+    case "coal":
+      return `${coalLatex(f.coalition)}${pathLatexAtom(f.path, maxD, curD)}`;
+    case "cocoal":
+      return `${cocoalLatex(f.coalition)}${pathLatexAtom(f.path, maxD, curD)}`;
+  }
+}
 
+function pathLatexInner(f: PathFormula, maxD: number, curD: number): string {
+  switch (f.kind) {
+    case "state": return stateLatexInner(f.sub, maxD, curD);
+    case "negp": {
+      if (needsPathParens(f.sub)) {
+        const dd = maxD - curD - 1;
+        return `\\neg${lp(dd)}${pathLatexInner(f.sub, maxD, curD + 1)}${rp(dd)}`;
+      }
+      return `\\neg ${pathLatexInner(f.sub, maxD, curD)}`;
+    }
+    case "andp": {
+      const dd = maxD - curD - 1;
+      return `${lp(dd)}${pathLatexInner(f.left, maxD, curD + 1)} \\wedge ${pathLatexInner(f.right, maxD, curD + 1)}${rp(dd)}`;
+    }
+    case "orp": {
+      const dd = maxD - curD - 1;
+      return `${lp(dd)}${pathLatexInner(f.left, maxD, curD + 1)} \\vee ${pathLatexInner(f.right, maxD, curD + 1)}${rp(dd)}`;
+    }
     case "next":
-      return `${coalitionLatex(f.coalition)}\\bigcirc ${printLatexWrapped(f.sub, total, depth)}`;
-
+      return `\\bigcirc ${pathLatexAtom(f.sub, maxD, curD)}`;
     case "always":
-      return `${coalitionLatex(f.coalition)}\\square ${printLatexWrapped(f.sub, total, depth)}`;
-
+      return `\\square ${pathLatexAtom(f.sub, maxD, curD)}`;
     case "until": {
-      const level = total - depth - 1;
-      return `${coalitionLatex(f.coalition)}${sizedOpen(level)}${printLatex(f.left, total, depth + 1)} \\,\\mathsf{U}\\, ${printLatex(f.right, total, depth + 1)}${sizedClose(level)}`;
+      const dd = maxD - curD - 1;
+      return `${lp(dd)}${pathLatexInner(f.left, maxD, curD + 1)} \\,\\mathsf{U}\\, ${pathLatexInner(f.right, maxD, curD + 1)}${rp(dd)}`;
     }
   }
 }
 
-function printLatexWrapped(f: Formula, total: number, depth: number): string {
-  if (f.kind === "and" || (f.kind === "not" && f.sub.kind === "and")) {
-    const level = total - depth - 1;
-    return `${sizedOpen(level)}${printLatex(f, total, depth + 1)}${sizedClose(level)}`;
+function pathLatexAtom(f: PathFormula, maxD: number, curD: number): string {
+  if (needsPathParens(f)) {
+    const dd = maxD - curD - 1;
+    return `${lp(dd)}${pathLatexInner(f, maxD, curD + 1)}${rp(dd)}`;
   }
-  return printLatex(f, total, depth);
+  return pathLatexInner(f, maxD, curD);
 }
 
-/**
- * Print a formula set as LaTeX.
- */
-export function printFormulaSetLatex(fs: FormulaSet): string {
-  const items = fs.toArray().map(printFormulaLatex);
-  return `\\{${items.join(",\\; ")}\\}`;
+// ============================================================
+// Set printing
+// ============================================================
+
+export function printStateSetAscii(fs: StateFormulaSet): string {
+  return `{${fs.toArray().map(printStateAscii).join(", ")}}`;
 }
 
-/**
- * Print a move vector as LaTeX.
- */
-export function printMoveVectorLatex(mv: MoveVector, agents?: Coalition): string {
+export function printStateSetLatex(fs: StateFormulaSet): string {
+  return `\\{${fs.toArray().map(printStateLatex).join(",\\; ")}\\}`;
+}
+
+// ============================================================
+// Move vector printing
+// ============================================================
+
+export function printMoveVector(mv: readonly number[], agents?: Coalition): string {
   if (agents && agents.length === mv.length) {
-    const parts = agents.map((a, i) => `${a}\\!:\\!${mv[i]}`);
-    return `(${parts.join(",\\,")})`;
+    return `(${agents.map((a, i) => `${a}:${mv[i]}`).join(",")})`;
   }
   return `(${mv.join(",")})`;
 }
+
+export function printMoveVectorLatex(mv: readonly number[], agents?: Coalition): string {
+  if (agents && agents.length === mv.length) {
+    return `(${agents.map((a, i) => `${a}\\!:\\!${mv[i]}`).join(",\\,")})`;
+  }
+  return `(${mv.join(",")})`;
+}
+
+// ============================================================
+// Compatibility aliases (used by UI files)
+// ============================================================
+
+/** Print a state formula in ASCII (alias for printStateAscii) */
+export const printFormula = printStateAscii;
+
+/** Print a state formula in Unicode (alias for printStateUnicode) */
+export const printFormulaUnicode = printStateUnicode;
+
+/** Print a state formula in LaTeX (alias for printStateLatex) */
+export const printFormulaLatex = printStateLatex;
+
+/** Print a state formula set in ASCII (alias for printStateSetAscii) */
+export const printFormulaSet = printStateSetAscii;
+
+/** Print a state formula set in LaTeX (alias for printStateSetLatex) */
+export const printFormulaSetLatex = printStateSetLatex;

@@ -12,14 +12,18 @@ import { parseFormula } from "../src/core/parser.ts";
 import { runTableau } from "../src/core/tableau.ts";
 import {
   Atom,
-  Not,
-  And,
-  Or,
-  Implies,
-  Next,
-  Always,
-  Until,
-  Eventually,
+  Neg,
+  SAnd,
+  SOr,
+  SImplies,
+  Coal,
+  CoCoal,
+  PNext,
+  PAlways,
+  PUntil,
+  PEvent,
+  PState,
+  type StateFormula,
 } from "../src/core/types.ts";
 
 function isSat(formulaStr: string): boolean {

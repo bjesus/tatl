@@ -1,155 +1,245 @@
 /**
- * Downward saturation (SR rule) for ATL tableau.
+ * Saturation (Rule SR) for ATL* formulas.
  *
- * FullExpansion takes a set of formulas Γ and produces FE(Γ) — a family of
- * fully expanded sets, by applying α-rules and β-rules until fixpoint.
+ * The saturation procedure takes a set of state formulas (the label of a
+ * prestate) and produces all possible sets of formula tuples — each of
+ * which will become a candidate state in the pretableau.
  *
- * In ATL there are no analytic cut rules (unlike CMAEL(CD)).
- * The expansion is simply full expansion.
+ * Three kinds of state formulas:
+ *   - Primitive: Top, Bot, Prop, Neg(Prop), Coal(A, Next(State _)), CoCoal(A, Next(State _))
+ *     → kept as-is in a singleton tuple
+ *   - Alpha (And): product of both sub-saturations
+ *   - Beta (Or): union of both sub-saturations
+ *   - Gamma (Coal/CoCoal non-next): decomposed via gammaComp, then recursively saturated
  *
- * Reference: Goranko & Shkatov 2009, Section 4, Rule (SR), p.18
+ * Reference: TATL construction.ml — saturation, product, rule_sr
  */
 
 import {
-  type Formula,
-  FormulaSet,
-  Not,
-  formulaKey,
+  type StateFormula,
+  type FormulaTuple,
+  STop,
+  PathFormulaSet,
+  StateFormulaSet,
+  formulaTupleKey,
 } from "./types.ts";
-import { classifyFormula } from "./classify.ts";
-import { isPatentlyInconsistent, isEventuality } from "./formula.ts";
+import { gammaComp } from "./decomposition.ts";
+import { isPatentlyInconsistentTuples } from "./formula.ts";
 
-/**
- * Check if a set is fully expanded:
- * - Not patently inconsistent
- * - If α-formula ∈ Δ, all α-components are in Δ
- * - If β-formula ∈ Δ, at least one β-component is in Δ
- */
-export function isFullyExpanded(fs: FormulaSet): boolean {
-  if (isPatentlyInconsistent(fs)) return false;
+// ============================================================
+// TupleSet — a set of FormulaTuples (one candidate state)
+// ============================================================
 
-  for (const f of fs) {
-    const cls = classifyFormula(f);
-    if (cls.type === "alpha") {
-      for (const comp of cls.components) {
-        if (!fs.has(comp)) return false;
-      }
-    } else if (cls.type === "beta") {
-      const hasAny = cls.components.some((comp) => fs.has(comp));
-      if (!hasAny) return false;
+export class TupleSet {
+  private _map: Map<string, FormulaTuple> = new Map();
+
+  constructor(tuples?: Iterable<FormulaTuple>) {
+    if (tuples) {
+      for (const t of tuples) this.add(t);
     }
   }
-  return true;
-}
 
-/**
- * Full expansion: produce all maximally consistent, fully expanded sets
- * from an initial set of formulas.
- *
- * This applies:
- * - α-rules: add all components
- * - β-rules: branch into multiple sets (one per component)
- *
- * No cut rules in ATL.
- */
-export function fullExpansion(gamma: FormulaSet): FormulaSet[] {
-  if (isPatentlyInconsistent(gamma)) {
-    return [];
+  add(t: FormulaTuple): void {
+    const key = formulaTupleKey(t);
+    if (!this._map.has(key)) this._map.set(key, t);
   }
 
-  let family: FormulaSet[] = [gamma.clone()];
+  get size(): number { return this._map.size; }
 
-  let changed = true;
-  while (changed) {
-    changed = false;
-    const nextFamily: FormulaSet[] = [];
-
-    for (const phi of family) {
-      // Try α-rule
-      const alphaResult = tryAlphaRule(phi);
-      if (alphaResult !== null) {
-        if (!isPatentlyInconsistent(alphaResult)) {
-          nextFamily.push(alphaResult);
-        }
-        changed = true;
-        continue;
-      }
-
-      // Try β-rule
-      const betaResult = tryBetaRule(phi);
-      if (betaResult !== null) {
-        for (const s of betaResult) {
-          if (!isPatentlyInconsistent(s)) {
-            nextFamily.push(s);
-          }
-        }
-        changed = true;
-        continue;
-      }
-
-      // No rule applies — this set is saturated
-      nextFamily.push(phi);
-    }
-
-    family = deduplicateSets(nextFamily);
+  *[Symbol.iterator](): Iterator<FormulaTuple> {
+    yield* this._map.values();
   }
 
-  return family;
+  toArray(): FormulaTuple[] { return [...this._map.values()]; }
+
+  key(): string {
+    const keys = [...this._map.keys()].sort();
+    return "{" + keys.join(",") + "}";
+  }
+
+  union(other: TupleSet): TupleSet {
+    const result = new TupleSet();
+    for (const t of this) result.add(t);
+    for (const t of other) result.add(t);
+    return result;
+  }
 }
 
-/**
- * Try to apply an α-rule. Returns the modified set, or null.
- */
-function tryAlphaRule(phi: FormulaSet): FormulaSet | null {
-  for (const f of phi) {
-    const cls = classifyFormula(f);
-    if (cls.type === "alpha") {
-      const missing = cls.components.filter((comp) => !phi.has(comp));
-      if (missing.length > 0) {
-        const result = phi.clone();
-        for (const comp of missing) {
-          result.add(comp);
-        }
-        return result;
-      }
+// ============================================================
+// SetOfTupleSets — all candidate states from a prestate
+// ============================================================
+
+export class SetOfTupleSets {
+  private _map: Map<string, TupleSet> = new Map();
+
+  constructor(sets?: Iterable<TupleSet>) {
+    if (sets) {
+      for (const s of sets) this.add(s);
     }
   }
-  return null;
-}
 
-/**
- * Try to apply a β-rule. Returns branches, or null.
- * Only applies when NO β-component is present.
- */
-function tryBetaRule(phi: FormulaSet): FormulaSet[] | null {
-  for (const f of phi) {
-    const cls = classifyFormula(f);
-    if (cls.type === "beta") {
-      const hasAny = cls.components.some((comp) => phi.has(comp));
-      if (!hasAny) {
-        return cls.components.map((comp) => {
-          const branch = phi.clone();
-          branch.add(comp);
-          return branch;
-        });
-      }
-    }
-  }
-  return null;
-}
-
-/**
- * Deduplicate a list of formula sets (by their canonical key).
- */
-function deduplicateSets(sets: FormulaSet[]): FormulaSet[] {
-  const seen = new Set<string>();
-  const result: FormulaSet[] = [];
-  for (const s of sets) {
+  add(s: TupleSet): void {
     const key = s.key();
-    if (!seen.has(key)) {
-      seen.add(key);
-      result.push(s);
+    if (!this._map.has(key)) this._map.set(key, s);
+  }
+
+  get size(): number { return this._map.size; }
+
+  isEmpty(): boolean { return this._map.size === 0; }
+
+  *[Symbol.iterator](): Iterator<TupleSet> {
+    yield* this._map.values();
+  }
+
+  toArray(): TupleSet[] { return [...this._map.values()]; }
+
+  union(other: SetOfTupleSets): SetOfTupleSets {
+    const result = new SetOfTupleSets();
+    for (const s of this) result.add(s);
+    for (const s of other) result.add(s);
+    return result;
+  }
+}
+
+// ============================================================
+// product — Cartesian product of two SetOfTupleSets
+// ============================================================
+
+/**
+ * Compute the Cartesian product of two sets of tuple-sets.
+ * Each pair (S₁, S₂) produces S₁ ∪ S₂.
+ * Empty sets are treated as identity (matching TATL behavior).
+ *
+ * Reference: TATL construction.ml product
+ */
+function product(set1: SetOfTupleSets, set2: SetOfTupleSets): SetOfTupleSets {
+  // Empty acts as identity (matching TATL behavior — empty means "no formulas yet",
+  // not "unsatisfiable"). Inconsistency is checked later in get_or_create_state.
+  if (set1.isEmpty()) return set2;
+  if (set2.isEmpty()) return set1;
+
+  const result = new SetOfTupleSets();
+  for (const s1 of set1) {
+    for (const s2 of set2) {
+      result.add(s1.union(s2));
     }
   }
   return result;
+}
+
+// ============================================================
+// saturation — core recursive expansion of a single formula
+// ============================================================
+
+/**
+ * Saturate a single state formula into a SetOfTupleSets.
+ *
+ * This is the recursive expansion that handles:
+ * - Primitives: return singleton
+ * - And: product of sub-saturations
+ * - Or: union of sub-saturations
+ * - Coal/CoCoal (non-next): gammaComp + recursive saturation of residuals
+ *
+ * Reference: TATL construction.ml saturation
+ */
+function saturation(formula: StateFormula): SetOfTupleSets {
+  switch (formula.kind) {
+    // Primitives — return singleton tuple in singleton set
+    case "top":
+    case "bot":
+    case "atom":
+      return new SetOfTupleSets([
+        new TupleSet([{ frm: formula, pathFrm: new PathFormulaSet(), nextFrm: STop }])
+      ]);
+
+    case "neg":
+      // After NNF, neg only wraps atoms → primitive
+      return new SetOfTupleSets([
+        new TupleSet([{ frm: formula, pathFrm: new PathFormulaSet(), nextFrm: STop }])
+      ]);
+
+    case "and":
+      // Alpha: product of both sides
+      return product(saturation(formula.left), saturation(formula.right));
+
+    case "or":
+      // Beta: union of both sides
+      return saturation(formula.left).union(saturation(formula.right));
+
+    case "coal":
+    case "cocoal": {
+      // Check if this is a next-time formula (primitive)
+      if (formula.path.kind === "next" && formula.path.sub.kind === "state") {
+        return new SetOfTupleSets([
+          new TupleSet([{ frm: formula, pathFrm: new PathFormulaSet(), nextFrm: STop }])
+        ]);
+      }
+
+      // Gamma: decompose via gammaComp, then recursively saturate residuals
+      const gammaComponents = gammaComp(formula);
+      let result = new SetOfTupleSets();
+
+      for (const t of gammaComponents) {
+        // Create a tuple with the ORIGINAL formula annotated with path/next from decomposition
+        const originalTuple = new TupleSet([{
+          frm: formula,
+          pathFrm: t.pathFrm,
+          nextFrm: t.nextFrm,
+        }]);
+
+        // Recursively saturate the state-level residual from decomposition
+        const residualSaturation = saturation(t.frm);
+
+        // Product: the original annotated tuple × the saturated residual
+        const combined = product(
+          new SetOfTupleSets([originalTuple]),
+          residualSaturation
+        );
+
+        result = result.union(combined);
+      }
+
+      return result;
+    }
+  }
+}
+
+// ============================================================
+// rule_sr — the full saturation rule
+// ============================================================
+
+/**
+ * Apply Rule SR: saturate a set of state formulas (prestate label)
+ * into a set of tuple-sets (candidate states).
+ *
+ * Folds over each formula in the prestate, saturating each one
+ * and combining via product (conjunction semantics).
+ *
+ * Reference: TATL construction.ml rule_sr
+ */
+export function ruleSR(formulas: StateFormulaSet): SetOfTupleSets {
+  let result = new SetOfTupleSets();
+  for (const f of formulas) {
+    result = product(saturation(f), result);
+  }
+  return result;
+}
+
+/**
+ * Extract the state formula set from a TupleSet.
+ * Collects all .frm fields into a StateFormulaSet.
+ */
+export function tupleSetToFormulas(ts: TupleSet): StateFormulaSet {
+  const result = new StateFormulaSet();
+  for (const t of ts) {
+    result.add(t.frm);
+  }
+  return result;
+}
+
+/**
+ * Extract the FormulaTuple list from a TupleSet.
+ */
+export function tupleSetToTuples(ts: TupleSet): FormulaTuple[] {
+  return ts.toArray();
 }

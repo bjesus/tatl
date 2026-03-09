@@ -465,7 +465,7 @@ input[type="text"]::placeholder { color: #bbb; }
       <div class="subtitle">
         This tool checks whether a formula of <strong title="Alternating-time Temporal Logic star" style="cursor:help;text-decoration:underline;text-decoration-style:dotted;text-underline-offset:2px">ATL*</strong> is <em>satisfiable</em>: that is,
         whether there exists a concurrent game structure and a state where the formula is true.
-        ATL (Alternating-time Temporal Logic) reasons about what coalitions of agents can achieve in multi-agent systems,
+        ATL reasons about what coalitions of agents can achieve in multi-agent systems,
         using operators like <span class="katex-placeholder" data-tex="\\langle\\!\\langle A \\rangle\\!\\rangle \\Box p"></span> (coalition <span class="katex-placeholder" data-tex="A"></span> can ensure <span class="katex-placeholder" data-tex="p"></span> always holds).
         ATL* extends ATL by allowing arbitrary path formulas inside coalition operators,
         e.g. <span class="katex-placeholder" data-tex="\\langle\\!\\langle A \\rangle\\!\\rangle (\\Box p \\wedge \\Diamond q)"></span> &mdash;

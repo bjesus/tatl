@@ -204,8 +204,8 @@ export function toDot(
     for (const [id, state] of result.pretableau.states) {
       const tooltip = formulaSetTooltip(state.formulas);
       const hasInput = state.formulas.has(result.inputFormula);
-      const fill = hasInput ? "#dbeafe" : "#f8f9fa";
-      const border = hasInput ? "#93b5e6" : "#d0d0d0";
+      const fill = hasInput ? "#d4edda" : "#f8f9fa";
+      const border = hasInput ? "#82c091" : "#d0d0d0";
       const label = nodeLabel(id, state.formulas, detailed);
       lines.push(`  "${id}" [label="${escDot(label)}", fillcolor="${fill}", color="${border}", tooltip="${escDot(tooltip)}"];`);
     }
@@ -216,7 +216,7 @@ export function toDot(
     // Solid edges (state → prestate transitions with move vectors)
     for (const edge of result.pretableau.solidEdges) {
       const mvLabel = formatMoveVector(edge.label, allAgents);
-      lines.push(`  "${edge.from}" -> "${edge.to}" [label=" ${escDot(mvLabel)} ", color="#4a6fa5", fontcolor="#4a6fa5"];`);
+      lines.push(`  "${edge.from}" -> "${edge.to}" [label=" ${escDot(mvLabel)} ", color="#2e7d57", fontcolor="#2e7d57"];`);
     }
   } else {
     const tableau = phase === "initial" ? result.initialTableau : result.finalTableau;
@@ -270,7 +270,7 @@ export function toDot(
     // Surviving edges
     for (const edge of tableau.edges) {
       const mvLabel = formatMoveVector(edge.label, allAgents);
-      lines.push(`  "${edge.from}" -> "${edge.to}" [label=" ${escDot(mvLabel)} ", color="#4a6fa5", fontcolor="#4a6fa5"];`);
+      lines.push(`  "${edge.from}" -> "${edge.to}" [label=" ${escDot(mvLabel)} ", color="#2e7d57", fontcolor="#2e7d57"];`);
     }
   }
 

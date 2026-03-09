@@ -28,8 +28,8 @@ export function generateHTML(result?: TableauResult): string {
   --border: #dfe1e6;
   --text: #2c3e50;
   --text-muted: #7a8599;
-  --accent: #4a6fa5;
-  --accent-light: #e8eef6;
+  --accent: #2e7d57;
+  --accent-light: #e6f4ed;
   --sat: #2e7d32;
   --sat-bg: #e8f5e9;
   --unsat: #c62828;
@@ -125,7 +125,7 @@ input[type="text"]::placeholder { color: #bbb; }
   border-radius: 6px; cursor: pointer; font-size: 0.85em; font-weight: 600;
   font-family: inherit; transition: background 0.15s; white-space: nowrap;
 }
-.btn:hover { background: #3d5d8a; }
+.btn:hover { background: #256b49; }
 .btn:active { transform: translateY(1px); }
 .loading { display: none; color: var(--text-muted); font-style: italic; font-size: 0.82em; }
 

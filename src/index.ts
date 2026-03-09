@@ -1,5 +1,5 @@
 /**
- * ATL Tableau Decision Procedure — CLI Entry Point
+ * ATL* Tableau Decision Procedure — CLI Entry Point
  *
  * Usage:
  *   bun run src/index.ts <formula>
@@ -102,7 +102,7 @@ async function runInteractive(): Promise<void> {
     output: process.stdout,
   });
 
-  console.log("ATL Tableau Decision Procedure — Interactive Mode");
+  console.log("ATL* Tableau Decision Procedure — Interactive Mode");
   console.log("Enter a formula to check satisfiability. Type 'help' for syntax, 'quit' to exit.");
   console.log("");
 
@@ -131,7 +131,7 @@ async function runInteractive(): Promise<void> {
 
 function printHelp(): void {
   console.log(`
-ATL Tableau Decision Procedure
+ATL* Tableau Decision Procedure
 
 Usage:
   atl <formula>                Check satisfiability of a formula
@@ -167,11 +167,14 @@ Formula Syntax:
   Eventually:   <<a>>F p          coalition {a} enforces eventually p
   Until:        <<a>>(p U q)      coalition {a} enforces p until q
   Empty coal.:  <<>>X p           empty coalition enforces next p
+  ATL* path:    <<a>>(G p & F q)  same strategy: always p and eventually q
+  ATL* nested:  <<a>>(G F p)      infinitely often p
 
 Examples:
   <<a>>X p                        agent a enforces next p
-  (<<a>>X p & <<b>>X ~p)         a enforces next p, b enforces next not p
-  <<a>>G p                        a enforces always p
+  <<a>>(G p & F q)                ATL*: always p and eventually q
+  <<a>>(G p & F ~p)               ATL*: unsatisfiable (contradictory path)
+  (<<a>>G p & <<a>>F ~p)          different strategies (satisfiable)
   <<a,b>>(p U q)                  {a,b} enforce p until q
   <<>>F p                         eventually p (empty coalition)
 `);

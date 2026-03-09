@@ -17,7 +17,7 @@ export function generateHTML(result?: TableauResult): string {
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>ATL Tableau Solver</title>
+<title>ATL* Tableau Solver</title>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
 <script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
 <style>
@@ -461,19 +461,18 @@ input[type="text"]::placeholder { color: #bbb; }
   <!-- ======= LEFT PANEL ======= -->
   <div class="left-panel">
     <div class="app-header">
-      <h1>ATL Tableau Solver</h1>
+      <h1>ATL* Tableau Solver</h1>
       <div class="subtitle">
-        This tool checks whether a formula of <strong title="Alternating-time Temporal Logic" style="cursor:help;text-decoration:underline;text-decoration-style:dotted;text-underline-offset:2px">ATL</strong> is <em>satisfiable</em>: that is,
+        This tool checks whether a formula of <strong title="Alternating-time Temporal Logic star" style="cursor:help;text-decoration:underline;text-decoration-style:dotted;text-underline-offset:2px">ATL*</strong> is <em>satisfiable</em>: that is,
         whether there exists a concurrent game structure and a state where the formula is true.
-        ATL extends temporal logic with coalition operators for <em>strategic reasoning</em>:
-        <span class="katex-placeholder" data-tex="\\langle\\!\\langle A \\rangle\\!\\rangle \\!\\bigcirc \\varphi"></span> (coalition
-        <span class="katex-placeholder" data-tex="A"></span> can ensure
-        <span class="katex-placeholder" data-tex="\\varphi"></span> at the next step),
-        <span class="katex-placeholder" data-tex="\\langle\\!\\langle A \\rangle\\!\\rangle \\Box \\varphi"></span> (always), and
-        <span class="katex-placeholder" data-tex="\\langle\\!\\langle A \\rangle\\!\\rangle (\\varphi \\mathbin{\\mathcal{U}} \\psi)"></span> (until).
+        ATL* extends ATL by allowing arbitrary path formulas inside coalition operators,
+        e.g. <span class="katex-placeholder" data-tex="\\langle\\!\\langle A \\rangle\\!\\rangle (\\Box p \\wedge \\Diamond q)"></span> &mdash;
+        coalition <span class="katex-placeholder" data-tex="A"></span> has a strategy ensuring
+        <span class="katex-placeholder" data-tex="p"></span> always and <span class="katex-placeholder" data-tex="q"></span> eventually,
+        on the <em>same</em> path.
       </div>
       <div class="credit">
-        Based on <a href="https://dl.acm.org/doi/abs/10.1145/1614431.1614434" target="_blank" rel="noopener">Goranko &amp; Shkatov (2009)</a> &middot; <a href="https://link.springer.com/chapter/10.1007/978-3-642-40537-2_10" target="_blank" rel="noopener">David (2013)</a> &middot; <a href="https://github.com/theoremprover-museum/TATL" target="_blank" rel="noopener">TATL</a>
+        Based on <a href="https://dl.acm.org/doi/abs/10.1145/1614431.1614434" target="_blank" rel="noopener">Goranko &amp; Shkatov (2009)</a> &middot; <a href="https://theses.hal.science/tel-01176908" target="_blank" rel="noopener">David (2015)</a> &middot; <a href="https://github.com/theoremprover-museum/TATL" target="_blank" rel="noopener">TATL</a>
       </div>
     </div>
 
@@ -502,7 +501,10 @@ input[type="text"]::placeholder { color: #bbb; }
           <button class="example-btn" onclick="setExample('<<a>>(p U q)')">Until</button>
           <button class="example-btn" onclick="setExample('(<<a>>X p & <<b>>X ~p)')">Conflicting strategies</button>
           <button class="example-btn" onclick="setExample('<<>>F p')">Eventually (empty coal.)</button>
-          <button class="example-btn" onclick="setExample('<<a,b>>G (p | q)')">Coalition always</button>
+          <button class="example-btn" onclick="setExample('<<a>>(G p & F q)')">ATL*: always p &amp; eventually q</button>
+          <button class="example-btn" onclick="setExample('<<a>>(G F p)')">ATL*: infinitely often</button>
+          <button class="example-btn" onclick="setExample('(<<a>>G p & <<a>>F ~p)')">Different strategies (SAT)</button>
+          <button class="example-btn" onclick="setExample('<<a>>(G p & F ~p)')">Same strategy (UNSAT)</button>
         </div>
       </div>
 
@@ -520,12 +522,15 @@ input[type="text"]::placeholder { color: #bbb; }
           <div class="syntax-item"><code>&lt;&lt;a&gt;&gt;F p</code> &mdash; <span class="katex-placeholder" data-tex="\\langle\\!\\langle a \\rangle\\!\\rangle \\Diamond p"></span> (eventually, sugar for <span class="katex-placeholder" data-tex="\\top \\mathbin{\\mathcal{U}} p"></span>)</div>
           <div class="syntax-item"><code>&lt;&lt;a&gt;&gt;(p U q)</code> &mdash; <span class="katex-placeholder" data-tex="\\langle\\!\\langle a \\rangle\\!\\rangle (p \\mathbin{\\mathcal{U}} q)"></span> (until)</div>
           <div class="syntax-item"><code>&lt;&lt;&gt;&gt;X p</code> &mdash; <span class="katex-placeholder" data-tex="\\langle\\!\\langle \\emptyset \\rangle\\!\\rangle \\!\\bigcirc p"></span> (empty coalition)</div>
+          <div class="syntax-item"><code>&lt;&lt;a&gt;&gt;(G p &amp; F q)</code> &mdash; ATL*: complex path formula</div>
+          <div class="syntax-item"><code>&lt;&lt;a&gt;&gt;(G F p)</code> &mdash; ATL*: nested temporal operators</div>
         </div>
       </div>
 
     </div>
     <div class="left-footer">
       <button class="footer-btn" onclick="openAboutModal()">How it works</button>
+      <a class="footer-btn" href="https://github.com/bjesus/tatl" target="_blank" rel="noopener">Source code</a>
     </div>
   </div>
 
@@ -591,7 +596,7 @@ input[type="text"]::placeholder { color: #bbb; }
 
     <div class="about-section">
       <h3>The Algorithm</h3>
-      <p>The algorithm is a <em>tableau-based decision procedure</em> for Alternating-time Temporal Logic (ATL) that works in three phases:</p>
+      <p>The algorithm is a <em>tableau-based decision procedure</em> for ATL* (the full Alternating-time Temporal Logic) that works in three phases:</p>
       <div class="phase-explain">
         <div class="phase-step">
           <div class="phase-num">1</div>
@@ -600,10 +605,11 @@ input[type="text"]::placeholder { color: #bbb; }
             Starting from the input formula, the algorithm builds a graph of <em>prestates</em> and <em>states</em>.
             A prestate is a set of formulas waiting to be expanded. Each prestate is expanded into one or more
             <em>fully expanded, downward saturated</em> states by applying logical decomposition rules
-            (splitting conjunctions, branching on disjunctions, and handling ATL operators).
+            (splitting conjunctions, branching on disjunctions, and applying <em>gamma-decomposition</em>
+            to expand coalition path formulas into formula tuples).
             For the Next rule, each state&rsquo;s next-time formulas
             (<span class="katex-placeholder" data-tex="\\langle\\!\\langle A \\rangle\\!\\rangle \\!\\bigcirc \\varphi"></span> and
-            <span class="katex-placeholder" data-tex="\\neg \\langle\\!\\langle A \\rangle\\!\\rangle \\!\\bigcirc \\varphi"></span>)
+            <span class="katex-placeholder" data-tex="[\\![A]\\!] \\!\\bigcirc \\varphi"></span>)
             are used to create successor prestates via <em>move vectors</em> &mdash; one for each combination of agent choices
             compatible with the coalition constraints. This builds the <em>pretableau</em>.
           </div>
@@ -625,10 +631,10 @@ input[type="text"]::placeholder { color: #bbb; }
             The algorithm iteratively removes &ldquo;defective&rdquo; states. Two types of defects are checked in a dovetailed loop:
             <ul style="margin:8px 0 4px 20px">
               <li><strong>E2:</strong> If a state requires a successor (via a move vector) but no matching successor exists, it is eliminated.</li>
-              <li><strong>E3:</strong> <em>Eventualities</em> (arising from
-                <span class="katex-placeholder" data-tex="\\langle\\!\\langle A \\rangle\\!\\rangle (\\varphi \\mathbin{\\mathcal{U}} \\psi)"></span> and
-                <span class="katex-placeholder" data-tex="\\neg \\langle\\!\\langle A \\rangle\\!\\rangle \\Box \\varphi"></span> formulas) must be
-                <em>realized</em>: there must be a finite path of accessible states witnessing the eventuality.
+              <li><strong>E3:</strong> <em>Eventualities</em> (arising from Until operators
+                within coalition path formulas) must be
+                <em>realized</em>: the algorithm computes <em>residual path formulas</em> to check whether
+                a finite path of accessible states can witness the eventuality.
                 States where an eventuality cannot be realized are eliminated.</li>
             </ul>
             This loop continues until no more states can be removed, yielding the <em>final tableau</em>.
@@ -685,9 +691,9 @@ input[type="text"]::placeholder { color: #bbb; }
         <a href="https://dl.acm.org/doi/abs/10.1145/1614431.1614434" target="_blank" rel="noopener" style="color:var(--accent)">ACM Trans. Comput. Log. 11(1)</a>
       </p>
       <p>
-        <strong>TATL: Implementation of ATL Tableau-Based Decision Procedure</strong><br>
-        Am&eacute;lie David (2013)<br>
-        <a href="https://link.springer.com/chapter/10.1007/978-3-642-40537-2_10" target="_blank" rel="noopener" style="color:var(--accent)">TABLEAUX 2013, LNCS vol 8123, pp 97&ndash;103</a>
+        <strong>Deciding ATL* satisfiability by tableaux</strong><br>
+        Am&eacute;lie David (2015, PhD thesis)<br>
+        <a href="https://theses.hal.science/tel-01176908" target="_blank" rel="noopener" style="color:var(--accent)">HAL tel-01176908</a>
       </p>
       <p>
         Original OCaml implementation: <a href="https://github.com/theoremprover-museum/TATL" target="_blank" rel="noopener" style="color:var(--accent)">TATL on GitHub</a>

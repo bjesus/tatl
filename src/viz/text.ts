@@ -22,7 +22,7 @@ export function textSummary(result: TableauResult): string {
   const lines: string[] = [];
 
   lines.push("=".repeat(60));
-  lines.push("ATL Tableau Decision Procedure");
+  lines.push("ATL* Tableau Decision Procedure");
   lines.push("=".repeat(60));
   lines.push("");
   lines.push(`Input formula: ${printFormula(result.inputFormula)}`);

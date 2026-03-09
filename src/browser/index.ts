@@ -1,5 +1,5 @@
 /**
- * Browser entry point for the ATL Tableau Solver.
+ * Browser entry point for the ATL* Tableau Solver.
  * Runs as a Web Worker to keep the UI responsive.
  */
 

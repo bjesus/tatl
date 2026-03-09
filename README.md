@@ -6,12 +6,19 @@ Given a formula, the solver determines whether it is *satisfiable*: whether ther
 
 Available as both a **command-line tool** and a **web interface**.
 
-## Based on
+## References
 
-> **Tableau-based decision procedure for full coalitional multiagent temporal logic**
-> Valentin Goranko and Dmitry Shkatov (2009)
+This is a from-scratch TypeScript reimplementation of [**TATL**](https://github.com/theoremprover-museum/TATL), originally written in OCaml by Amélie David.
 
-The implementation faithfully follows the paper's three-phase tableau algorithm with move vectors for the Next rule. Results have been cross-validated against the TATL OCaml reference implementation (all 42 test formulas from the David 2013 paper matching, plus additional formulas — 121 tests total).
+The algorithm is based on:
+
+> Goranko, V., Shkatov, D. (2009). **Tableau-based decision procedures for logics of strategic ability in multi-agent systems.** *ACM Trans. Comput. Log.* 11(1). [doi:10.1145/1614431.1614434](https://dl.acm.org/doi/abs/10.1145/1614431.1614434)
+
+The original OCaml implementation and its test formulas are described in:
+
+> David, A. (2013). **TATL: Implementation of ATL Tableau-Based Decision Procedure.** In: *Automated Reasoning with Analytic Tableaux and Related Methods (TABLEAUX 2013)*. LNCS, vol 8123, pp 97–103. Springer. [doi:10.1007/978-3-642-40537-2_10](https://link.springer.com/chapter/10.1007/978-3-642-40537-2_10)
+
+This implementation faithfully follows the paper's three-phase tableau algorithm with move vectors for the Next rule. Results have been extensively cross-validated against the [original TATL OCaml implementation](https://github.com/theoremprover-museum/TATL) — all 42 test formulas from the David 2013 paper plus hundreds of systematically generated formulas, all matching.
 
 ## Formula syntax
 

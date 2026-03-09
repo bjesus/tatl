@@ -473,7 +473,7 @@ input[type="text"]::placeholder { color: #bbb; }
         <span class="katex-placeholder" data-tex="\\langle\\!\\langle A \\rangle\\!\\rangle (\\varphi \\mathbin{\\mathcal{U}} \\psi)"></span> (until).
       </div>
       <div class="credit">
-        Based on <a href="https://doi.org/10.1016/j.artint.2009.04.003" target="_blank" rel="noopener">Goranko &amp; Shkatov (2009)</a>
+        Based on <a href="https://dl.acm.org/doi/abs/10.1145/1614431.1614434" target="_blank" rel="noopener">Goranko &amp; Shkatov (2009)</a> &middot; <a href="https://link.springer.com/chapter/10.1007/978-3-642-40537-2_10" target="_blank" rel="noopener">David (2013)</a> &middot; <a href="https://github.com/theoremprover-museum/TATL" target="_blank" rel="noopener">TATL</a>
       </div>
     </div>
 
@@ -678,11 +678,19 @@ input[type="text"]::placeholder { color: #bbb; }
     </div>
 
     <div class="about-section about-credits">
-      <h3>Reference</h3>
+      <h3>References</h3>
       <p>
-        <strong>Tableau-based decision procedure for full coalitional multiagent temporal logic of branching time</strong><br>
+        <strong>Tableau-based decision procedures for logics of strategic ability in multi-agent systems</strong><br>
         Valentin Goranko and Dmitry Shkatov (2009)<br>
-        <a href="https://doi.org/10.1016/j.artint.2009.04.003" target="_blank" rel="noopener" style="color:var(--accent)">Artificial Intelligence, 173(12&ndash;13), 1115&ndash;1153</a>
+        <a href="https://dl.acm.org/doi/abs/10.1145/1614431.1614434" target="_blank" rel="noopener" style="color:var(--accent)">ACM Trans. Comput. Log. 11(1)</a>
+      </p>
+      <p>
+        <strong>TATL: Implementation of ATL Tableau-Based Decision Procedure</strong><br>
+        Am&eacute;lie David (2013)<br>
+        <a href="https://link.springer.com/chapter/10.1007/978-3-642-40537-2_10" target="_blank" rel="noopener" style="color:var(--accent)">TABLEAUX 2013, LNCS vol 8123, pp 97&ndash;103</a>
+      </p>
+      <p>
+        Original OCaml implementation: <a href="https://github.com/theoremprover-museum/TATL" target="_blank" rel="noopener" style="color:var(--accent)">TATL on GitHub</a>
       </p>
     </div>
   </div>

@@ -77,18 +77,31 @@ function resetNodeCounter(): void {
 /**
  * Run the tableau procedure on a state formula.
  *
+ * By default the agent set is taken to be exactly the agents mentioned in the
+ * formula ("tight satisfiability"). This matters semantically: the meaning of
+ * <<A>> depends on the complement allAgents \ A, so whether A happens to be
+ * the grand coalition can decide satisfiability. For example
+ * (~<<>>X ~p & ~<<a>>X p) is unsatisfiable when a is the only agent, but
+ * satisfiable as soon as some other agent exists. `extraAgents` lets a caller
+ * declare such additional agents that the formula never mentions.
+ *
  * @param theta - The input formula to test for satisfiability
+ * @param extraAgents - Additional agents assumed present in the model
  * @returns TableauResult with all phases recorded
  */
 export function runTableau(
   theta: StateFormula,
+  extraAgents?: readonly Agent[],
   onProgress?: (stage: string) => void
 ): TableauResult {
   resetNodeCounter();
   clearDecompositionCache();
 
-  // Compute all agents from the formula (tight satisfiability)
-  const allAgents = normalizeCoalition([...agentsInStateSet(new StateFormulaSet([theta]))]);
+  // Agents mentioned in the formula, plus any the caller declared explicitly
+  const allAgents = normalizeCoalition([
+    ...agentsInStateSet(new StateFormulaSet([theta])),
+    ...(extraAgents ?? []),
+  ]);
 
   // Phase 1: Construction
   if (onProgress) onProgress("Phase 1: Construction");

@@ -8,12 +8,14 @@
  *
  * Options:
  *   --verbose              Show all phases in detail
+ *   --system ltl|ctl|atl   Logical system of the input (default: atl)
+ *   --agents a,b           Assume extra agents not mentioned in the formula
  *   --dot [phase]          Output DOT graph (pretableau|initial|final)
  *   --html                 Output standalone HTML visualization
  *   --interactive          Interactive mode (read formulas from stdin)
  */
 
-import { parseFormula } from "./core/parser.ts";
+import { parseFormula, systemAgents, type System } from "./core/parser.ts";
 import { printFormula } from "./core/printer.ts";
 import { runTableau } from "./core/tableau.ts";
 import { textSummary, textVerbose, toDot } from "./viz/text.ts";
@@ -31,6 +33,17 @@ const interactive = args.includes("--interactive") || args.includes("-i");
 const dotIndex = args.indexOf("--dot");
 const dotPhase = dotIndex >= 0 ? (args[dotIndex + 1] as "pretableau" | "initial" | "final" || "final") : null;
 const htmlOutput = args.includes("--html");
+const systemIndex = args.indexOf("--system");
+const systemArg = systemIndex >= 0 ? (args[systemIndex + 1] ?? "").toLowerCase() : "atl";
+if (!["atl", "ctl", "ltl"].includes(systemArg)) {
+  console.error(`Error: unknown system '${systemArg}'. Use ltl, ctl or atl.`);
+  process.exit(1);
+}
+const system = systemArg as System;
+const agentsIndex = args.indexOf("--agents");
+const extraAgents = agentsIndex >= 0
+  ? (args[agentsIndex + 1] ?? "").split(",").map((a) => a.trim()).filter(Boolean)
+  : [];
 
 if (interactive) {
   runInteractive();
@@ -45,7 +58,7 @@ if (interactive) {
 }
 
 function extractFormulaArg(args: string[]): string | null {
-  const skipNext = new Set(["--dot"]);
+  const skipNext = new Set(["--dot", "--agents", "--system"]);
   const skipFlags = new Set([
     "--verbose", "-v", "--interactive", "-i",
     "--html", "--help", "-h",
@@ -68,13 +81,13 @@ function extractFormulaArg(args: string[]): string | null {
 function solveAndPrint(formulaStr: string): void {
   let formula;
   try {
-    formula = parseFormula(formulaStr);
+    formula = parseFormula(formulaStr, system);
   } catch (e: any) {
     console.error(`Parse error: ${e.message}`);
     process.exit(1);
   }
 
-  const result = runTableau(formula);
+  const result = runTableau(formula, [...systemAgents(system), ...extraAgents]);
 
   if (htmlOutput) {
     console.log(generateHTML(result));
@@ -140,9 +153,23 @@ Usage:
 
 Options:
   --verbose, -v                  Show detailed output for all phases
+  --system ltl|ctl|atl           Logical system of the input (default: atl)
+  --agents a,b                   Assume extra agents beyond those in the formula
   --dot [pretableau|initial|final]   Output DOT (Graphviz) graph
   --html                         Output standalone HTML visualization
   --interactive, -i              Interactive REPL mode
+
+By default the model contains exactly the agents mentioned in the formula. Since
+a coalition operator is interpreted relative to the full agent set, declaring
+extra agents can change the answer:
+
+  atl "(~<<>>X ~p & ~<<a>>X p)"              UNSATISFIABLE (a is every agent)
+  atl "(~<<>>X ~p & ~<<a>>X p)" --agents b   SATISFIABLE   (b opposes a)
+
+LTL and CTL are the one-agent fragments of ATL* and are translated into it:
+
+  atl --system ltl "G F p"                   LTL:  infinitely often p
+  atl --system ctl "AG EF p"                 CTL:  p is always reachable
 
 Examples:
   atl "<<a>>X p"

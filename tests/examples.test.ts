@@ -26,9 +26,9 @@ import {
   type StateFormula,
 } from "../src/core/types.ts";
 
-function isSat(formulaStr: string): boolean {
+function isSat(formulaStr: string, extraAgents?: readonly string[]): boolean {
   const formula = parseFormula(formulaStr);
-  const result = runTableau(formula);
+  const result = runTableau(formula, extraAgents);
   return result.satisfiable;
 }
 
@@ -398,6 +398,63 @@ describe("Tableau structure", () => {
       const edge = result.finalTableau.edges[0]!;
       expect(Array.isArray(edge.label)).toBe(true);
     }
+  });
+});
+
+// ============================================================
+// Explicitly declared agents
+//
+// A coalition operator is interpreted relative to the whole agent set, so
+// whether the coalition happens to be the grand coalition can decide
+// satisfiability. `extraAgents` lets a caller widen the agent set beyond the
+// agents the formula mentions.
+// ============================================================
+
+describe("Extra agents", () => {
+  // [[]]X p says "p at every next state"; [[a]]X ~p says "a cannot avoid ~p next".
+  // If a is the only agent then [[a]] is the grand coalition and the two clash.
+  const grandCoalition = "(~<<>>X ~p & ~<<a>>X p)";
+
+  test("grand coalition conflict is unsatisfiable with the formula's agents alone", () => {
+    expect(isSat(grandCoalition)).toBe(false);
+  });
+
+  test("same formula becomes satisfiable once another agent exists", () => {
+    expect(isSat(grandCoalition, ["b"])).toBe(true);
+  });
+
+  test("two-agent coalition is also grand until a third agent is declared", () => {
+    expect(isSat("(~<<>>X ~p & ~<<a,b>>X p)")).toBe(false);
+    expect(isSat("(~<<>>X ~p & ~<<a,b>>X p)", ["c"])).toBe(true);
+  });
+
+  test("extra agents are merged into allAgents and normalized", () => {
+    const result = runTableau(parseFormula("<<a>>X p"), ["c", "b"]);
+    expect([...result.allAgents]).toEqual(["a", "b", "c"]);
+  });
+
+  test("extra agents already in the formula are deduplicated", () => {
+    const result = runTableau(parseFormula("(<<a>>X p & <<b>>X q)"), ["a"]);
+    expect([...result.allAgents]).toEqual(["a", "b"]);
+  });
+
+  test("declaring agents for a formula that mentions none", () => {
+    const result = runTableau(parseFormula("<<>>X p"), ["a"]);
+    expect([...result.allAgents]).toEqual(["a"]);
+    expect(result.satisfiable).toBe(true);
+  });
+
+  test("empty and omitted extra agents behave identically", () => {
+    expect(isSat(grandCoalition, [])).toBe(false);
+    expect(isSat(grandCoalition, undefined)).toBe(false);
+  });
+
+  test("extra agents do not disturb an ordinary satisfiable formula", () => {
+    expect(isSat("<<a>>X p", ["b", "c"])).toBe(true);
+  });
+
+  test("extra agents cannot rescue a propositional contradiction", () => {
+    expect(isSat("(p & ~p)", ["a", "b"])).toBe(false);
   });
 });
 

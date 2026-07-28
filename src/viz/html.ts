@@ -118,6 +118,63 @@ input[type="text"]::placeholder { color: #bbb; }
 .input-clear:hover { background: var(--border); color: var(--text); }
 .formula-input-wrap.has-value .input-clear { display: flex; }
 
+/* System selector */
+.system-row { display: flex; align-items: center; gap: 10px; }
+.system-row .section-title { margin-bottom: 0; white-space: nowrap; flex-shrink: 0; }
+select.system-select {
+  flex: 1; min-width: 0; padding: 7px 10px; border: 1.5px solid var(--border);
+  border-radius: 6px; font-size: 0.84em; font-family: inherit;
+  background: var(--surface); color: var(--text); cursor: pointer;
+  transition: border-color 0.15s;
+}
+select.system-select:focus {
+  outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-light);
+}
+.system-note {
+  margin-top: 7px; font-size: 0.76em; color: var(--text-muted); line-height: 1.45;
+}
+.syntax-ref .ref-note {
+  display: block; margin-top: 6px; padding-top: 7px;
+  border-top: 1px solid var(--border); line-height: 1.5;
+}
+
+/* Agent set */
+.agents-row {
+  display: flex; align-items: center; gap: 6px; margin-top: 10px; flex-wrap: wrap;
+}
+.agents-label {
+  font-size: 0.7em; font-weight: 600; text-transform: uppercase;
+  letter-spacing: 0.08em; color: var(--text-muted); cursor: help;
+}
+.agents-list { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; }
+.agent-badge {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 2px 8px; border-radius: 12px; font-size: 0.76em; font-weight: 600;
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  background: var(--accent-light); color: var(--accent); border: 1px solid var(--border);
+}
+.agent-badge.extra { background: #fff3e0; color: #92400e; border-color: #f0d9b5; }
+.agent-badge-x {
+  border: none; background: none; padding: 0; cursor: pointer; line-height: 1;
+  font-size: 1.15em; color: inherit; opacity: 0.55; font-family: inherit;
+}
+.agent-badge-x:hover { opacity: 1; }
+.agents-empty { font-size: 0.76em; color: var(--text-muted); font-style: italic; }
+.agent-add-btn {
+  padding: 3px 9px; background: var(--surface-alt); border: 1px dashed var(--border);
+  color: var(--text-muted); border-radius: 12px; cursor: pointer; font-size: 0.72em;
+  font-family: inherit; transition: all 0.15s; white-space: nowrap;
+}
+.agent-add-btn:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-light); }
+input.agent-add-input {
+  display: none; width: 82px; padding: 3px 9px; border: 1.5px solid var(--accent);
+  border-radius: 12px; font-size: 0.76em;
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  background: var(--surface); color: var(--text);
+}
+input.agent-add-input.visible { display: inline-block; }
+.agent-error { color: var(--unsat); font-size: 0.78em; margin-top: 6px; display: none; }
+
 .actions { display: flex; align-items: center; gap: 12px; margin-top: 12px; flex-wrap: wrap; }
 .btn {
   display: inline-flex; align-items: center; gap: 6px;
@@ -214,6 +271,10 @@ input[type="text"]::placeholder { color: #bbb; }
 .result-banner.unsat { background: var(--unsat-bg); color: var(--unsat); border: 1px solid #ffcdd2; }
 .result-banner .icon { font-size: 1.3em; }
 .result-formula { margin-top: 4px; font-weight: 400; }
+.banner-agents {
+  margin-top: 4px; font-weight: 400; font-size: 0.78em; opacity: 0.75; cursor: help;
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+}
 .result-banner .banner-stats {
   margin-left: auto; display: flex; gap: 14px; flex-shrink: 0;
 }
@@ -480,6 +541,19 @@ input[type="text"]::placeholder { color: #bbb; }
 
     <div class="left-scroll">
 
+      <!-- System -->
+      <div class="left-section">
+        <div class="system-row">
+        <div class="section-title">System</div>
+        <select id="system-select" class="system-select" onchange="setSystem(this.value)">
+          <option value="ltl">LTL &mdash; linear temporal logic</option>
+          <option value="ctl">CTL &mdash; computation tree logic</option>
+          <option value="atl" selected>ATL* &mdash; alternating-time temporal logic</option>
+        </select>
+        </div>
+        <div class="system-note" id="system-note"></div>
+      </div>
+
       <!-- Formula Input -->
       <div class="left-section">
         <div class="section-title">Formula</div>
@@ -487,6 +561,13 @@ input[type="text"]::placeholder { color: #bbb; }
           <input type="text" id="formula-input" placeholder="e.g.  <<a>>X p" autocomplete="off" spellcheck="false" />
           <button class="input-clear" id="input-clear" onclick="clearInput()" title="Clear">&times;</button>
         </div>
+        <div class="agents-row" id="agents-row">
+          <span class="agents-label" title="The set of agents in the model. Agents used in the formula are included automatically. Adding further agents can change the answer, because the meaning of a coalition operator depends on which agents are outside the coalition.">Agents</span>
+          <div class="agents-list" id="agents-list"></div>
+          <button class="agent-add-btn" id="agent-add-btn" onclick="startAddAgent()" title="Assume an extra agent that the formula does not mention">+ Add agent</button>
+          <input type="text" class="agent-add-input" id="agent-add-input" placeholder="name" autocomplete="off" spellcheck="false" maxlength="12" />
+        </div>
+        <div id="agent-error" class="agent-error"></div>
         <div class="actions">
           <button class="btn" id="solve-btn" onclick="solve()">Check Satisfiability</button>
           <span class="loading" id="loading">Solving...</span>
@@ -497,24 +578,93 @@ input[type="text"]::placeholder { color: #bbb; }
       <!-- Examples -->
       <div class="left-section">
         <div class="section-title">Examples</div>
-        <div class="examples">
+
+        <div class="examples" data-system="ltl" style="display:none">
+          <button class="example-btn" onclick="setExample('X p')">Next</button>
+          <button class="example-btn" onclick="setExample('G p')">Always</button>
+          <button class="example-btn" onclick="setExample('F p')">Eventually</button>
+          <button class="example-btn" onclick="setExample('(p U q)')">Until</button>
+          <button class="example-btn" onclick="setExample('(p R q)')">Release</button>
+          <button class="example-btn" onclick="setExample('G ~p')">Safety: never p</button>
+          <button class="example-btn" onclick="setExample('G F p')">Liveness: infinitely often p</button>
+          <button class="example-btn" onclick="setExample('F G p')">Eventually always p</button>
+          <button class="example-btn" onclick="setExample('G (p -> F q)')">Response: p is answered by q</button>
+          <button class="example-btn" onclick="setExample('(G F p & G F ~p)')">Alternating (SAT)</button>
+          <button class="example-btn" onclick="setExample('(G p & F ~p)')">Always p yet eventually not p (UNSAT)</button>
+          <button class="example-btn" onclick="setExample('(F G p & G F ~p)')">Stabilises yet keeps flipping (UNSAT)</button>
+          <button class="example-btn" onclick="setExample('~(F G p -> G F p)')">Negated validity (UNSAT)</button>
+        </div>
+
+        <div class="examples" data-system="ctl" style="display:none">
+          <button class="example-btn" onclick="setExample('EX p')">Some next</button>
+          <button class="example-btn" onclick="setExample('AX p')">All next</button>
+          <button class="example-btn" onclick="setExample('AG p')">Invariant: always p</button>
+          <button class="example-btn" onclick="setExample('EF p')">Reachable: possibly p</button>
+          <button class="example-btn" onclick="setExample('AF p')">Inevitable: p on every path</button>
+          <button class="example-btn" onclick="setExample('EG p')">Some path with p throughout</button>
+          <button class="example-btn" onclick="setExample('A[p U q]')">All until</button>
+          <button class="example-btn" onclick="setExample('E[p U q]')">Exists until</button>
+          <button class="example-btn" onclick="setExample('AG EF p')">Resettable: p always reachable</button>
+          <button class="example-btn" onclick="setExample('AG (p -> AF q)')">Response: p is answered by q</button>
+          <button class="example-btn" onclick="setExample('(EX p & EX ~p)')">Branching: both p and not p next</button>
+          <button class="example-btn" onclick="setExample('EF(EG p -> AF r)')">Nested quantifiers</button>
+          <button class="example-btn" onclick="setExample('(AG p & EF ~p)')">Invariant p yet not p reachable (UNSAT)</button>
+          <button class="example-btn" onclick="setExample('(AF p & EG ~p)')">Inevitable p yet a path avoiding it (UNSAT)</button>
+          <button class="example-btn" onclick="setExample('~(AG p -> AX AG p)')">Negated expansion law (UNSAT)</button>
+        </div>
+
+        <div class="examples" data-system="atl">
           <button class="example-btn" onclick="setExample('<<a>>X p')">Next</button>
           <button class="example-btn" onclick="setExample('<<a>>G p')">Always</button>
           <button class="example-btn" onclick="setExample('<<a>>(p U q)')">Until</button>
-          <button class="example-btn" onclick="setExample('(<<a>>X p & <<b>>X ~p)')">Conflicting strategies</button>
+          <button class="example-btn" onclick="setExample('(<<a>>X p & <<b>>X ~p)')">Conflicting strategies (UNSAT)</button>
           <button class="example-btn" onclick="setExample('<<>>F p')">Eventually (empty coal.)</button>
           <button class="example-btn" onclick="setExample('<<a>>(G p & F q)')">ATL*: always p &amp; eventually q</button>
           <button class="example-btn" onclick="setExample('<<a>>(G F p)')">ATL*: infinitely often</button>
           <button class="example-btn" onclick="setExample('(<<a>>G p & <<a>>F ~p)')">Different strategies (SAT)</button>
           <button class="example-btn" onclick="setExample('<<a>>(G p & F ~p)')">Same strategy (UNSAT)</button>
+          <button class="example-btn" onclick="setExample('(~<<>>X ~p & ~<<a>>X p)')">Grand coalition: a alone (UNSAT)</button>
+          <button class="example-btn" onclick="setExample('(~<<>>X ~p & ~<<a>>X p)', ['b'])">Same, plus agent b (SAT)</button>
         </div>
       </div>
 
       <!-- Syntax Reference -->
       <div class="left-section">
         <div class="section-title">Syntax Reference</div>
-        <div class="syntax-ref">
-          <div class="syntax-item"><code>p</code> &mdash; atomic proposition</div>
+
+        <div class="syntax-ref" data-system="ltl" style="display:none">
+          <div class="syntax-item"><code>p</code> &mdash; atomic proposition (lowercase)</div>
+          <div class="syntax-item"><code>~p</code> &mdash; <span class="katex-placeholder" data-tex="\\neg p"></span></div>
+          <div class="syntax-item"><code>(p & q)</code> &mdash; <span class="katex-placeholder" data-tex="(p \\wedge q)"></span></div>
+          <div class="syntax-item"><code>(p | q)</code> &mdash; <span class="katex-placeholder" data-tex="(p \\vee q)"></span></div>
+          <div class="syntax-item"><code>(p -> q)</code> &mdash; <span class="katex-placeholder" data-tex="(p \\to q)"></span></div>
+          <div class="syntax-item"><code>X p</code> &mdash; <span class="katex-placeholder" data-tex="\\bigcirc p"></span> next: p holds at the next state</div>
+          <div class="syntax-item"><code>G p</code> &mdash; <span class="katex-placeholder" data-tex="\\Box p"></span> globally: p holds at every state</div>
+          <div class="syntax-item"><code>F p</code> &mdash; <span class="katex-placeholder" data-tex="\\Diamond p"></span> finally: p holds at some state</div>
+          <div class="syntax-item"><code>(p U q)</code> &mdash; <span class="katex-placeholder" data-tex="(p \\mathbin{\\mathcal{U}} q)"></span> until: p holds until q does, and q must</div>
+          <div class="syntax-item"><code>(p R q)</code> &mdash; <span class="katex-placeholder" data-tex="(p \\mathbin{\\mathcal{R}} q)"></span> release: q holds up to and including the first p</div>
+          <div class="syntax-item ref-note">A formula is read along a single infinite path, so no path quantifiers are used. It is satisfiable when some path satisfies it.</div>
+        </div>
+
+        <div class="syntax-ref" data-system="ctl" style="display:none">
+          <div class="syntax-item"><code>p</code> &mdash; atomic proposition (lowercase)</div>
+          <div class="syntax-item"><code>~p</code> &mdash; <span class="katex-placeholder" data-tex="\\neg p"></span></div>
+          <div class="syntax-item"><code>(p & q)</code> &mdash; <span class="katex-placeholder" data-tex="(p \\wedge q)"></span></div>
+          <div class="syntax-item"><code>(p | q)</code> &mdash; <span class="katex-placeholder" data-tex="(p \\vee q)"></span></div>
+          <div class="syntax-item"><code>(p -> q)</code> &mdash; <span class="katex-placeholder" data-tex="(p \\to q)"></span></div>
+          <div class="syntax-item"><code>AX p</code> &mdash; <span class="katex-placeholder" data-tex="\\forall\\bigcirc p"></span> p at every next state</div>
+          <div class="syntax-item"><code>EX p</code> &mdash; <span class="katex-placeholder" data-tex="\\exists\\bigcirc p"></span> p at some next state</div>
+          <div class="syntax-item"><code>AG p</code> &mdash; <span class="katex-placeholder" data-tex="\\forall\\Box p"></span> p everywhere on every path</div>
+          <div class="syntax-item"><code>EG p</code> &mdash; <span class="katex-placeholder" data-tex="\\exists\\Box p"></span> some path with p throughout</div>
+          <div class="syntax-item"><code>AF p</code> &mdash; <span class="katex-placeholder" data-tex="\\forall\\Diamond p"></span> every path reaches p</div>
+          <div class="syntax-item"><code>EF p</code> &mdash; <span class="katex-placeholder" data-tex="\\exists\\Diamond p"></span> some path reaches p</div>
+          <div class="syntax-item"><code>A[p U q]</code> &mdash; <span class="katex-placeholder" data-tex="\\forall(p \\mathbin{\\mathcal{U}} q)"></span> until, on every path</div>
+          <div class="syntax-item"><code>E[p U q]</code> &mdash; <span class="katex-placeholder" data-tex="\\exists(p \\mathbin{\\mathcal{U}} q)"></span> until, on some path</div>
+          <div class="syntax-item ref-note">Every temporal operator must be paired with a quantifier: <code>AG p</code>, never <code>G p</code>, and <code>A[p U q]</code>, never <code>(p U q)</code>. Round brackets also work: <code>A(p U q)</code>. Unpaired operators are CTL*, not CTL.</div>
+        </div>
+
+        <div class="syntax-ref" data-system="atl">
+          <div class="syntax-item"><code>p</code> &mdash; atomic proposition (lowercase)</div>
           <div class="syntax-item"><code>~p</code> &mdash; <span class="katex-placeholder" data-tex="\\neg p"></span></div>
           <div class="syntax-item"><code>(p & q)</code> &mdash; <span class="katex-placeholder" data-tex="(p \\wedge q)"></span></div>
           <div class="syntax-item"><code>(p | q)</code> &mdash; <span class="katex-placeholder" data-tex="(p \\vee q)"></span></div>
@@ -722,6 +872,30 @@ let currentView = 'graph';
 var renderCallbacks = {};
 var renderIdCounter = 0;
 var pendingSolve = null;
+// Agents added by hand, i.e. assumed present but never mentioned in the formula
+var extraAgents = [];
+// Logical system the input is written in: 'ltl', 'ctl' or 'atl'
+var currentSystem = 'atl';
+
+var SYSTEMS = {
+  ltl: {
+    placeholder: 'e.g.  G F p',
+    // LTL and CTL are read over a single agent, so the agent set is not the
+    // user's business in those systems.
+    showAgents: false,
+    note: 'Formulas describe one infinite path. Satisfiable means some path satisfies the formula. Solved as the one-agent ATL* fragment.'
+  },
+  ctl: {
+    placeholder: 'e.g.  AG EF p',
+    showAgents: false,
+    note: 'Every temporal operator is paired with a path quantifier, A (all paths) or E (some path). Solved as the one-agent ATL* fragment.'
+  },
+  atl: {
+    placeholder: 'e.g.  <<a>>X p',
+    showAgents: true,
+    note: 'Coalition operators quantify over strategies of a group of agents. LTL and CTL are the one-agent fragments of this system.'
+  }
+};
 
 // Set up the worker message handler. Called from DOMContentLoaded
 // so that the second script block (which creates window.__solverWorker)
@@ -1178,17 +1352,24 @@ function closeAboutModal() {
   }
 }
 
-function setExample(formula) {
+function setExample(formula, agents) {
   document.getElementById('formula-input').value = formula;
+  extraAgents = agents ? agents.slice() : [];
   updateClearBtn();
+  cancelAddAgent();
+  renderAgents();
   solve();
 }
 
 function clearInput() {
   var input = document.getElementById('formula-input');
   input.value = '';
+  extraAgents = [];
   updateClearBtn();
+  cancelAddAgent();
+  renderAgents();
   input.focus();
+  hideAgentError();
   document.getElementById('parse-error').style.display = 'none';
   var section = document.getElementById('result-section');
   if (section) section.style.display = 'none';
@@ -1198,9 +1379,168 @@ function clearInput() {
   history.pushState(null, '', window.location.pathname);
 }
 
-function buildUrl(formula) {
+// Show the examples, syntax reference, placeholder and agent controls that
+// belong to the selected system.
+function renderSystem() {
+  var spec = SYSTEMS[currentSystem] || SYSTEMS.atl;
+
+  document.getElementById('system-select').value = currentSystem;
+  document.getElementById('system-note').textContent = spec.note;
+  document.getElementById('formula-input').placeholder = spec.placeholder;
+
+  // '' restores the stylesheet's display (flex for examples, grid for the
+  // syntax reference) rather than forcing a value
+  document.querySelectorAll('[data-system]').forEach(function(el) {
+    el.style.display = el.dataset.system === currentSystem ? '' : 'none';
+  });
+
+  // The agent set is only meaningful for ATL*
+  document.getElementById('agents-row').style.display = spec.showAgents ? '' : 'none';
+  if (!spec.showAgents) hideAgentError();
+
+  renderAgents();
+}
+
+function setSystem(system) {
+  if (!SYSTEMS[system] || system === currentSystem) return;
+  currentSystem = system;
+  cancelAddAgent();
+  // Each system has its own syntax, so a formula written for the previous one
+  // is almost never valid here. Start clean rather than showing a parse error.
+  document.getElementById('formula-input').value = '';
+  extraAgents = [];
+  updateClearBtn();
+  renderSystem();
+  document.getElementById('parse-error').style.display = 'none';
+  var section = document.getElementById('result-section');
+  if (section) section.style.display = 'none';
+  var empty = document.getElementById('right-empty');
+  if (empty) empty.style.display = '';
+  history.pushState({ system: currentSystem }, '', buildUrl('', [], currentSystem));
+  document.getElementById('formula-input').focus();
+}
+
+// Agents mentioned in the formula's coalition operators. This is a lightweight
+// scan so badges can update while typing; the authoritative set comes back with
+// the result. Normalising [[..]] to <<..>> first keeps the pattern simple.
+function formulaAgents(formula) {
+  var norm = formula.split('[[').join('<<').split(']]').join('>>');
+  var re = /<<([^<>]*)>>/g;
+  var found = [], seen = {}, m;
+  while ((m = re.exec(norm)) !== null) {
+    m[1].split(',').forEach(function(part) {
+      var name = part.trim();
+      if (name && !seen[name]) { seen[name] = true; found.push(name); }
+    });
+  }
+  return found.sort();
+}
+
+// Manually added agents that the formula does not already mention
+function activeExtraAgents() {
+  var inFormula = formulaAgents(document.getElementById('formula-input').value);
+  return extraAgents.filter(function(a) { return inFormula.indexOf(a) === -1; });
+}
+
+function renderAgents() {
+  var listEl = document.getElementById('agents-list');
+  listEl.textContent = '';
+  var inFormula = formulaAgents(document.getElementById('formula-input').value);
+  var extras = activeExtraAgents();
+
+  inFormula.forEach(function(name) {
+    var badge = document.createElement('span');
+    badge.className = 'agent-badge';
+    badge.title = 'Used in the formula';
+    badge.textContent = name;
+    listEl.appendChild(badge);
+  });
+
+  extras.forEach(function(name) {
+    var badge = document.createElement('span');
+    badge.className = 'agent-badge extra';
+    badge.title = 'Added manually';
+    badge.textContent = name;
+    var x = document.createElement('button');
+    x.className = 'agent-badge-x';
+    x.title = 'Remove ' + name;
+    x.innerHTML = '&times;';
+    x.onclick = function() { removeAgent(name); };
+    badge.appendChild(x);
+    listEl.appendChild(badge);
+  });
+
+  if (!inFormula.length && !extras.length) {
+    var none = document.createElement('span');
+    none.className = 'agents-empty';
+    none.textContent = 'none';
+    listEl.appendChild(none);
+  }
+}
+
+function startAddAgent() {
+  var input = document.getElementById('agent-add-input');
+  document.getElementById('agent-add-btn').style.display = 'none';
+  input.classList.add('visible');
+  input.value = '';
+  input.focus();
+}
+
+function cancelAddAgent() {
+  var input = document.getElementById('agent-add-input');
+  input.value = '';
+  input.classList.remove('visible');
+  document.getElementById('agent-add-btn').style.display = '';
+  hideAgentError();
+}
+
+// quiet=true is used when the field loses focus: the agent is still added if the
+// name is usable, but abandoning a half-typed name should not raise an error.
+function commitAddAgent(quiet) {
+  var input = document.getElementById('agent-add-input');
+  var name = input.value.trim().toLowerCase();
+  if (!name) { cancelAddAgent(); return; }
+
+  var problem = null;
+  if (!/^[a-z0-9_]+$/.test(name)) {
+    problem = 'Agent names may only contain lowercase letters, digits and underscores.';
+  } else if (formulaAgents(document.getElementById('formula-input').value).indexOf(name) !== -1) {
+    problem = 'Agent "' + name + '" already appears in the formula.';
+  } else if (extraAgents.indexOf(name) !== -1) {
+    problem = 'Agent "' + name + '" has already been added.';
+  }
+  if (problem) {
+    if (quiet) { cancelAddAgent(); return; }
+    showAgentError(problem);
+    return;
+  }
+
+  extraAgents.push(name);
+  extraAgents.sort();
+  cancelAddAgent();
+  renderAgents();
+}
+
+function removeAgent(name) {
+  extraAgents = extraAgents.filter(function(a) { return a !== name; });
+  renderAgents();
+}
+
+function showAgentError(msg) {
+  var el = document.getElementById('agent-error');
+  el.textContent = msg;
+  el.style.display = 'block';
+}
+
+function hideAgentError() {
+  document.getElementById('agent-error').style.display = 'none';
+}
+
+function buildUrl(formula, agents, system) {
   var params = new URLSearchParams();
+  if (system && system !== 'atl') params.set('system', system);
   if (formula) params.set('formula', formula);
+  if (agents && agents.length) params.set('agents', agents.join(','));
   var qs = params.toString();
   return window.location.pathname + (qs ? '?' + qs : '');
 }
@@ -1227,15 +1567,35 @@ document.addEventListener('DOMContentLoaded', function() {
   });
   var input = document.getElementById('formula-input');
   input.addEventListener('input', updateClearBtn);
+  input.addEventListener('input', renderAgents);
 
-  // Check URL for ?formula= parameter
+  // Commit a new agent on Enter, abandon it on Escape
+  var agentInput = document.getElementById('agent-add-input');
+  agentInput.addEventListener('keydown', function(e) {
+    if (e.key === 'Enter') { e.preventDefault(); commitAddAgent(); }
+    else if (e.key === 'Escape') { e.preventDefault(); cancelAddAgent(); }
+  });
+  agentInput.addEventListener('blur', function() {
+    // Committing hides the field, which itself fires blur; ignore that second pass
+    if (agentInput.classList.contains('visible')) commitAddAgent(true);
+  });
+
+  // Check URL for ?system=, ?formula= and ?agents= parameters
   var params = new URLSearchParams(window.location.search);
+  var initSystem = params.get('system');
   var initFormula = params.get('formula');
+  var initAgents = params.get('agents');
+  if (initSystem && SYSTEMS[initSystem]) currentSystem = initSystem;
+  extraAgents = initAgents ? initAgents.split(',').map(function(a) { return a.trim(); }).filter(Boolean) : [];
+  renderSystem();
   if (initFormula) {
     input.value = initFormula;
     updateClearBtn();
+    renderAgents();
     // Replace current history entry with state so popstate works
-    history.replaceState({ formula: initFormula }, '', buildUrl(initFormula));
+    history.replaceState(
+      { formula: initFormula, agents: extraAgents.slice(), system: currentSystem },
+      '', buildUrl(initFormula, extraAgents, currentSystem));
     solve(true);
   } else {
     input.focus();
@@ -1246,13 +1606,19 @@ document.addEventListener('DOMContentLoaded', function() {
 window.addEventListener('popstate', function(e) {
   var state = e.state;
   if (state && state.formula) {
+    if (state.system && SYSTEMS[state.system]) currentSystem = state.system;
     document.getElementById('formula-input').value = state.formula;
+    extraAgents = state.agents ? state.agents.slice() : [];
     updateClearBtn();
+    renderSystem();
     solve(true);
   } else {
     // No formula — reset to empty state
+    if (state && state.system && SYSTEMS[state.system]) currentSystem = state.system;
     document.getElementById('formula-input').value = '';
+    extraAgents = [];
     updateClearBtn();
+    renderSystem();
     document.getElementById('parse-error').style.display = 'none';
     var section = document.getElementById('result-section');
     if (section) section.style.display = 'none';
@@ -1448,14 +1814,25 @@ function displayResult(result, solveState) {
     '<div class="banner-stat" title="Phase 2 (Prestate Elimination): States remaining after removing prestates and rewiring edges into direct state-to-state transitions. This is the starting point for state elimination."><div class="num">' + result.stats.initialStates + '</div><div class="label">Initial</div></div>' +
     '<div class="banner-stat" title="Phase 3 (State Elimination): States surviving after removing defective states via rules E2 (missing successors) and E3 (unrealized eventualities). The formula is satisfiable iff this is greater than 0."><div class="num">' + result.stats.finalStates + '</div><div class="label">Final</div></div>' +
     '</div>';
+  var agentsHtml;
+  if (currentSystem === 'atl') {
+    var agentSet = (result.allAgents && result.allAgents.length)
+      ? '{' + result.allAgents.join(', ') + '}' : '\u2205';
+    agentsHtml = '<div class="banner-agents" title="The agent set this answer was computed for. Coalition operators are interpreted relative to it.">Agents: ' + agentSet + '</div>';
+  } else {
+    // The tableau works on the ATL* translation, so name it rather than let the
+    // notation look like it came out of nowhere.
+    agentsHtml = '<div class="banner-agents" title="' + currentSystem.toUpperCase() +
+      ' is solved as the one-agent fragment of ATL*. This is the translated formula, and it is the notation used in the tableau below.">as ATL*</div>';
+  }
   if (result.satisfiable) {
     banner.className = 'result-banner sat';
     banner.innerHTML = '<span class="icon">&#10003;</span><div><div>Satisfiable</div>' +
-      '<div class="result-formula" data-tex="' + escAttr(result.inputLatex) + '"></div></div>' + statsHtml;
+      '<div class="result-formula" data-tex="' + escAttr(result.inputLatex) + '"></div>' + agentsHtml + '</div>' + statsHtml;
   } else {
     banner.className = 'result-banner unsat';
     banner.innerHTML = '<span class="icon">&#10007;</span><div><div>Unsatisfiable</div>' +
-      '<div class="result-formula" data-tex="' + escAttr(result.inputLatex) + '"></div></div>' + statsHtml;
+      '<div class="result-formula" data-tex="' + escAttr(result.inputLatex) + '"></div>' + agentsHtml + '</div>' + statsHtml;
   }
   banner.querySelectorAll('[data-tex]').forEach(function(el) {
     renderLatex(el, el.dataset.tex);
@@ -1480,8 +1857,10 @@ function displayResult(result, solveState) {
   
   // Update browser URL and history
   if (solveState && !solveState.fromHistory) {
-    var stateObj = { formula: solveState.formula };
-    history.pushState(stateObj, '', buildUrl(solveState.formula));
+    var stateObj = {
+      formula: solveState.formula, agents: solveState.agents, system: solveState.system
+    };
+    history.pushState(stateObj, '', buildUrl(solveState.formula, solveState.agents, solveState.system));
     section.scrollIntoView({ behavior: 'smooth', block: 'start' });
   }
 }
@@ -1511,20 +1890,18 @@ function solve(fromHistory) {
   }
 
   showSolving(true);
-  pendingSolve = { formula: formula, fromHistory: fromHistory };
-  
+  var agents = SYSTEMS[currentSystem].showAgents ? activeExtraAgents() : [];
+  pendingSolve = {
+    formula: formula, agents: agents, system: currentSystem, fromHistory: fromHistory
+  };
+
   if (window.__solverWorker) {
     window.__solverWorker.postMessage({
-      type: 'solve', formula: formula
+      type: 'solve', formula: formula, agents: agents, system: currentSystem
     });
   } else {
     showSolveError("Solver worker not initialized. Reload page.");
   }
-}
-
-// Placeholder solver — replaced by bundled code
-function solveFormula(f, a, r) {
-  throw new Error('Solver not loaded. Build with: bun run src/build-html.ts');
 }
 </script>
 </body>

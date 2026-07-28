@@ -20,7 +20,7 @@
 // Embed the pre-built web UI into the binary
 import htmlPath from "../dist/index.html" with { type: "file" };
 
-import { parseFormula } from "./core/parser.ts";
+import { parseFormula, systemAgents, type System } from "./core/parser.ts";
 import { runTableau } from "./core/tableau.ts";
 import { textSummary, textVerbose, toDot } from "./viz/text.ts";
 import { generateHTML } from "./viz/html.ts";
@@ -36,7 +36,23 @@ const knownFlags = new Set([
   "--verbose", "-v", "--interactive", "-i",
   "--html", "--help", "-h", "--web", "--no-open",
 ]);
-const flagsWithValue = new Set(["--dot", "--port"]);
+const flagsWithValue = new Set(["--dot", "--port", "--agents", "--system"]);
+
+function getSystem(): System {
+  const idx = args.indexOf("--system");
+  const value = idx >= 0 ? (args[idx + 1] ?? "").toLowerCase() : "atl";
+  if (!["atl", "ctl", "ltl"].includes(value)) {
+    console.error(`Error: unknown system '${value}'. Use ltl, ctl or atl.`);
+    process.exit(1);
+  }
+  return value as System;
+}
+
+function getExtraAgents(): string[] {
+  const idx = args.indexOf("--agents");
+  if (idx < 0) return [];
+  return (args[idx + 1] ?? "").split(",").map((a) => a.trim()).filter(Boolean);
+}
 
 function hasFormulaArg(): boolean {
   for (let i = 0; i < args.length; i++) {
@@ -148,15 +164,16 @@ function runCLI(): void {
   const dotPhase = dotIndex >= 0 ? (args[dotIndex + 1] as "pretableau" | "initial" | "final" || "final") : null;
   const htmlOutput = args.includes("--html");
 
+  const system = getSystem();
   let formula;
   try {
-    formula = parseFormula(formulaStr);
+    formula = parseFormula(formulaStr, system);
   } catch (e: any) {
     console.error(`Parse error: ${e.message}`);
     process.exit(1);
   }
 
-  const result = runTableau(formula);
+  const result = runTableau(formula, [...systemAgents(system), ...getExtraAgents()]);
 
   if (htmlOutput) {
     console.log(generateHTML(result));
@@ -208,8 +225,9 @@ async function runInteractive(): Promise<void> {
 
       // Inline solve for interactive mode
       try {
-        const f = parseFormula(trimmed);
-        const r = runTableau(f);
+        const system = getSystem();
+        const f = parseFormula(trimmed, system);
+        const r = runTableau(f, [...systemAgents(system), ...getExtraAgents()]);
         console.log(textSummary(r));
       } catch (e: any) {
         console.error(`Error: ${e.message}`);
@@ -243,9 +261,23 @@ Web server options:
 
 CLI options:
   --verbose, -v                    Show detailed output for all phases
+  --system ltl|ctl|atl             Logical system of the input (default: atl)
+  --agents a,b                     Assume extra agents beyond those in the formula
   --dot [pretableau|initial|final] Output DOT (Graphviz) graph
   --html                           Output standalone HTML visualization
   --interactive, -i                Interactive REPL mode
+
+By default the model contains exactly the agents mentioned in the formula. Since
+a coalition operator is interpreted relative to the full agent set, declaring
+extra agents can change the answer:
+
+  atl "(~<<>>X ~p & ~<<a>>X p)"              UNSATISFIABLE (a is every agent)
+  atl "(~<<>>X ~p & ~<<a>>X p)" --agents b   SATISFIABLE   (b opposes a)
+
+LTL and CTL are the one-agent fragments of ATL* and are translated into it:
+
+  atl --system ltl "G F p"         LTL:  infinitely often p
+  atl --system ctl "AG EF p"       CTL:  p is always reachable
 
 Examples:
   atl                              Open web UI in browser

@@ -34,6 +34,18 @@
  *
  * Backward compatible: <<a>>G p, <<a>>(p U q), etc. all still work.
  * New ATL* forms: <<a>>(Gp & Fq), <<a>>GFp, etc.
+ *
+ * The parser also reads the two single-agent fragments, translating them into
+ * ATL* (see `System`):
+ *
+ *   LTL: the whole input is a path formula
+ *     ltlFormula := pathExpr                      => <<a>>pathExpr
+ *
+ *   CTL: every temporal operator is paired with a path quantifier
+ *     ctlPrimary := 'A' ctlPath | 'E' ctlPath | atom | '~' ctlPrimary | '(' expr ')'
+ *     ctlPath    := 'X' ctlPrimary | 'G' ctlPrimary | 'F' ctlPrimary
+ *                 | '[' expr 'U' expr ']' | '(' expr 'U' expr ')'
+ *     with 'A' => <<>> and 'E' => <<a>>
  */
 
 import {
@@ -54,12 +66,47 @@ class ParseError extends Error {
   }
 }
 
+/**
+ * The logical system an input formula is written in.
+ *
+ * LTL and CTL are both fragments of ATL* interpreted over a model with exactly
+ * one agent. With a single agent, that agent alone determines the play, so its
+ * strategies correspond to paths:
+ *
+ *   <<a>>π   there is a path satisfying π    (existential path quantifier, E)
+ *   <<>>π    every path satisfies π          (universal path quantifier, A)
+ *
+ * which gives the translations
+ *
+ *   LTL   π         =>  <<a>>π      (π is read on a single path)
+ *   CTL   A π       =>  <<>>π
+ *   CTL   E π       =>  <<a>>π
+ *
+ * Both embeddings are only faithful when the agent set is exactly {a}; see
+ * `systemAgents`.
+ */
+export type System = "atl" | "ctl" | "ltl";
+
+/** The single agent that LTL and CTL formulas are interpreted over. */
+export const SYSTEM_AGENT: Agent = "a";
+
+/**
+ * Agents that must be present in the model for a system, whatever the formula
+ * mentions. A CTL formula built only from A translates to <<>> and so names no
+ * agent at all, but the embedding needs exactly one agent to exist.
+ */
+export function systemAgents(system: System): readonly Agent[] {
+  return system === "atl" ? [] : [SYSTEM_AGENT];
+}
+
 class Parser {
   private pos: number = 0;
   private input: string;
+  private system: System;
 
-  constructor(input: string) {
+  constructor(input: string, system: System = "atl") {
     this.input = input;
+    this.system = system;
   }
 
   // ============================================================
@@ -68,15 +115,31 @@ class Parser {
 
   parse(): StateFormula {
     this.skipWhitespace();
-    const result = this.parseStateExpr();
+    // An LTL formula is a path formula; it is satisfiable iff some path of a
+    // one-agent model satisfies it, which is exactly <<a>>π.
+    const result = this.system === "ltl"
+      ? Coal([SYSTEM_AGENT], this.parsePathExpr())
+      : this.parseStateExpr();
     this.skipWhitespace();
     if (this.pos < this.input.length) {
-      throw new ParseError(
-        `Unexpected character '${this.input[this.pos]}' at position ${this.pos}`,
+      throw this.trailingError();
+    }
+    return result;
+  }
+
+  /** Error for input left over once a complete formula has been parsed. */
+  private trailingError(): ParseError {
+    const ch = this.input[this.pos]!;
+    if (this.system === "ctl" && (ch === "U" || ch === "W")) {
+      return new ParseError(
+        `In CTL, '${ch}' must be paired with a path quantifier: write A[p ${ch} q] or E[p ${ch} q]`,
         this.pos
       );
     }
-    return result;
+    return new ParseError(
+      `Unexpected character '${ch}' at position ${this.pos}`,
+      this.pos
+    );
   }
 
   private parseStateExpr(): StateFormula {
@@ -124,6 +187,25 @@ class Parser {
       this.skipWhitespace();
       const sub = this.parseStatePrimary();
       return Neg(sub);
+    }
+
+    // CTL: path quantifiers replace the coalition operators
+    if (this.system === "ctl") {
+      if (ch === "A" || ch === "E") {
+        return this.parseCtlQuantifier();
+      }
+      if (ch === "X" || ch === "G" || ch === "F") {
+        throw new ParseError(
+          `In CTL, '${ch}' must be preceded by a path quantifier: write A${ch} or E${ch}`,
+          this.pos
+        );
+      }
+      if (this.lookAhead("<<") || ch === "[") {
+        throw new ParseError(
+          "Coalition operators belong to ATL*; in CTL use the path quantifiers A and E",
+          this.pos
+        );
+      }
     }
 
     // Coalition operator: <<...>>π
@@ -195,6 +277,60 @@ class Parser {
     return CoCoal(coalition, path);
   }
 
+  /**
+   * Parse a CTL formula Qπ, where Q is A or E.
+   *
+   * CTL pairs each path quantifier with exactly one temporal operator, and the
+   * operands of that operator are themselves state formulas:
+   *
+   *   AX φ  EX φ  AG φ  EG φ  AF φ  EF φ  A[φ U ψ]  E[φ U ψ]
+   *
+   * Parentheses are accepted in place of brackets for the until form. Anything
+   * looser (an unpaired U, or several temporal operators under one quantifier)
+   * is CTL* rather than CTL and is rejected.
+   */
+  private parseCtlQuantifier(): StateFormula {
+    const quantifier = this.peek()!; // 'A' or 'E'
+    this.advance(1);
+    this.skipWhitespace();
+
+    // A quantifies over all paths (<<>>), E over some path (<<a>>)
+    const coalition: Coalition = quantifier === "A" ? [] : [SYSTEM_AGENT];
+    const ch = this.peek();
+
+    if (ch === "X" || ch === "G" || ch === "F") {
+      this.advance(1);
+      const arg = PState(this.parseStatePrimary());
+      const path =
+        ch === "X" ? PNext(arg) : ch === "G" ? PAlways(arg) : PEvent(arg);
+      return Coal(coalition, path);
+    }
+
+    // A[φ U ψ] / A(φ U ψ)
+    if (ch === "[" || ch === "(") {
+      const close = ch === "[" ? "]" : ")";
+      this.advance(1);
+      const left = this.parseStateExpr();
+      this.skipWhitespace();
+      if (this.peek() !== "U") {
+        throw new ParseError(
+          `Expected 'U' in ${quantifier}[... U ...] at position ${this.pos}`,
+          this.pos
+        );
+      }
+      this.advance(1);
+      const right = this.parseStateExpr();
+      this.skipWhitespace();
+      this.expect(close);
+      return Coal(coalition, PUntil(PState(left), PState(right)));
+    }
+
+    throw new ParseError(
+      `In CTL, '${quantifier}' must be followed by X, G, F or [... U ...]`,
+      this.pos
+    );
+  }
+
   // ============================================================
   // Path formula parsing (after <<A>> or [[A]])
   // ============================================================
@@ -222,13 +358,13 @@ class Parser {
         this.skipWhitespace();
         const right = this.parsePathPrimary();
         left = PAnd(left, right);
-      } else if (this.peek() === "U" && !this.isAgentChar(this.input[this.pos + 1] ?? "")) {
+      } else if (this.peek() === "U") {
         // Infix U: π₁ U π₂
         this.advance(1);
         this.skipWhitespace();
         const right = this.parsePathPrimary();
         left = PUntil(left, right);
-      } else if (this.peek() === "R" && !this.isAgentChar(this.input[this.pos + 1] ?? "")) {
+      } else if (this.peek() === "R") {
         // Infix R (release): π₁ R π₂ — will be eliminated by NNF
         // π₁ R π₂ ≡ ¬(¬π₁ U ¬π₂)
         this.advance(1);
@@ -260,8 +396,27 @@ class Parser {
       return PNeg(sub);
     }
 
+    // LTL has no path quantifiers: a formula is read on one path
+    if (this.system === "ltl") {
+      if (ch === "A" || ch === "E") {
+        throw new ParseError(
+          `'${ch}' is a CTL path quantifier; an LTL formula describes a single path. Switch the system to CTL to use A and E.`,
+          this.pos
+        );
+      }
+      if (this.lookAhead("<<") || ch === "[") {
+        throw new ParseError(
+          "Coalition operators belong to ATL*; an LTL formula has no path quantifiers",
+          this.pos
+        );
+      }
+    }
+
+    // Temporal operators are uppercase and atoms are lowercase, so an operator
+    // letter can never begin a name: no lookahead is needed to tell them apart.
+
     // Next: X π
-    if (ch === "X" && !this.isAgentChar(this.input[this.pos + 1] ?? "")) {
+    if (ch === "X") {
       this.advance(1);
       this.skipWhitespace();
       const sub = this.parsePathPrimary();
@@ -269,7 +424,7 @@ class Parser {
     }
 
     // Always: G π
-    if (ch === "G" && !this.isAgentChar(this.input[this.pos + 1] ?? "")) {
+    if (ch === "G") {
       this.advance(1);
       this.skipWhitespace();
       const sub = this.parsePathPrimary();
@@ -277,7 +432,7 @@ class Parser {
     }
 
     // Eventually: F π (sugar for ⊤ U π)
-    if (ch === "F" && !this.isAgentChar(this.input[this.pos + 1] ?? "")) {
+    if (ch === "F") {
       this.advance(1);
       this.skipWhitespace();
       const sub = this.parsePathPrimary();
@@ -374,8 +529,17 @@ class Parser {
 
   private expect(ch: string): void {
     if (this.pos >= this.input.length || this.input[this.pos] !== ch) {
+      const got = this.input[this.pos] ?? "EOF";
+      // A stray U/W in CTL almost always means an unpaired temporal operator,
+      // which is the single most common mistake when writing CTL.
+      if (this.system === "ctl" && (got === "U" || got === "W")) {
+        throw new ParseError(
+          `In CTL, '${got}' must be paired with a path quantifier: write A[p ${got} q] or E[p ${got} q]`,
+          this.pos
+        );
+      }
       throw new ParseError(
-        `Expected '${ch}' at position ${this.pos}, got '${this.input[this.pos] ?? "EOF"}'`,
+        `Expected '${ch}' at position ${this.pos}, got '${got}'`,
         this.pos
       );
     }
@@ -391,9 +555,12 @@ class Parser {
 
 /**
  * Parse a formula string into a StateFormula AST, then apply NNF transformation.
+ *
+ * LTL and CTL inputs are translated into their ATL* equivalents over a single
+ * agent, so the result is always an ATL* formula regardless of `system`.
  */
-export function parseFormula(input: string): StateFormula {
-  const parser = new Parser(input.trim());
+export function parseFormula(input: string, system: System = "atl"): StateFormula {
+  const parser = new Parser(input.trim(), system);
   const raw = parser.parse();
   return toNNF(raw);
 }
@@ -401,7 +568,7 @@ export function parseFormula(input: string): StateFormula {
 /**
  * Parse a formula string WITHOUT applying NNF (useful for testing the parser).
  */
-export function parseFormulaRaw(input: string): StateFormula {
-  const parser = new Parser(input.trim());
+export function parseFormulaRaw(input: string, system: System = "atl"): StateFormula {
+  const parser = new Parser(input.trim(), system);
   return parser.parse();
 }

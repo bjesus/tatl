@@ -3,7 +3,7 @@
  * Runs as a Web Worker to keep the UI responsive.
  */
 
-import { parseFormula } from "../core/parser.ts";
+import { parseFormula, systemAgents, type System } from "../core/parser.ts";
 import { printFormula, printFormulaSet, printFormulaLatex, printFormulaSetLatex, printMoveVector, printMoveVectorLatex } from "../core/printer.ts";
 import { runTableau } from "../core/tableau.ts";
 import { toDot } from "../viz/text.ts";
@@ -29,9 +29,14 @@ ctx.onmessage = async (e: MessageEvent) => {
   if (msg.type === 'solve') {
     try {
       ctx.postMessage({ type: 'status', stage: 'Parsing formula...' });
-      const formula = parseFormula(msg.formula);
+      const system: System = msg.system || 'atl';
+      const formula = parseFormula(msg.formula, system);
 
-      const result = runTableau(formula, (stage: string) => {
+      // LTL and CTL are read over a single agent; ATL* also takes any agents
+      // the user declared by hand.
+      const agents = [...systemAgents(system), ...(msg.agents ?? [])];
+
+      const result = runTableau(formula, agents, (stage: string) => {
         ctx.postMessage({ type: 'status', stage });
       });
 
@@ -100,6 +105,7 @@ function serializeResult(result: TableauResult) {
   return {
     satisfiable: result.satisfiable,
     inputLatex,
+    allAgents: [...allAgents],
     stats: {
       pretableauStates: result.pretableau.states.size,
       pretableauPrestates: result.pretableau.prestates.size,

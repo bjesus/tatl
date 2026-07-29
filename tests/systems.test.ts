@@ -35,9 +35,10 @@ describe("System agent sets", () => {
     expect(systemAgents("atl")).toEqual([]);
   });
 
-  test("LTL and CTL are interpreted over exactly one agent", () => {
+  test("LTL, CTL and CTL* are interpreted over exactly one agent", () => {
     expect(systemAgents("ltl")).toEqual(["a"]);
     expect(systemAgents("ctl")).toEqual(["a"]);
+    expect(systemAgents("ctlstar")).toEqual(["a"]);
   });
 
   test("a CTL formula using only A still gets an agent", () => {
@@ -226,6 +227,98 @@ describe("CTL satisfiability", () => {
     expect(isSat("~(AF p -> (p | AX AF p))", "ctl")).toBe(false);
     expect(isSat("~(EF p -> (p | EX EF p))", "ctl")).toBe(false);
     expect(isSat("~(EG p -> (p & EX EG p))", "ctl")).toBe(false);
+  });
+});
+
+// ============================================================
+// CTL*: the one-agent fragment of ATL*
+// ============================================================
+
+describe("CTL* translation", () => {
+  test("A becomes the empty coalition, E the single agent", () => {
+    expect(translate("A G p", "ctlstar")).toBe("<<>>G p");
+    expect(translate("E G p", "ctlstar")).toBe("<<a>>G p");
+  });
+
+  test("a quantifier takes an arbitrary path formula", () => {
+    expect(translate("E(G p & F q)", "ctlstar")).toBe("<<a>>(G p & (_top U q))");
+    expect(translate("A(F G p)", "ctlstar")).toBe("<<>>(_top U G p)");
+    expect(translate("E(p U (q U r))", "ctlstar")).toBe("<<a>>(p U (q U r))");
+  });
+
+  test("brackets group like parentheses", () => {
+    expect(translate("A[G F p]", "ctlstar")).toBe(translate("A(G F p)", "ctlstar"));
+    expect(translate("E[p U q]", "ctlstar")).toBe(translate("E(p U q)", "ctlstar"));
+  });
+
+  test("quantifiers nest inside path formulas", () => {
+    expect(translate("AG EF p", "ctlstar")).toBe("<<>>G <<a>>(_top U p)");
+  });
+
+  test("a state formula is a valid path formula", () => {
+    // Legal in CTL* (and equivalent to p), unlike in CTL where A must pair
+    // with a temporal operator
+    expect(translate("A p", "ctlstar")).toBe("<<>>p");
+    expect(() => parseFormula("A p", "ctl")).toThrow();
+  });
+
+  test("every CTL formula is also a CTL* formula, with the same translation", () => {
+    for (const f of ["AX p", "EX p", "AG p", "EG p", "AF p", "EF p", "AG EF p"]) {
+      expect(translate(f, "ctlstar")).toBe(translate(f, "ctl"));
+    }
+  });
+});
+
+describe("CTL* satisfiability", () => {
+  test("formulas that are CTL* but not CTL are satisfiable", () => {
+    expect(isSat("E(G F p)", "ctlstar")).toBe(true);
+    expect(isSat("A(F G p)", "ctlstar")).toBe(true);
+    expect(isSat("E(G p & F q)", "ctlstar")).toBe(true);
+    expect(isSat("A(G F p -> F G q)", "ctlstar")).toBe(true);
+    expect(isSat("E(G F p & G F ~p)", "ctlstar")).toBe(true);
+    expect(isSat("E(p U (q U r))", "ctlstar")).toBe(true);
+  });
+
+  test("CTL and LTL results carry over", () => {
+    expect(isSat("AG EF p", "ctlstar")).toBe(true);
+    expect(isSat("(EX p & EX ~p)", "ctlstar")).toBe(true);
+    expect(isSat("(AG p & EF ~p)", "ctlstar")).toBe(false);
+  });
+
+  test("contradictions along a single path are unsatisfiable", () => {
+    expect(isSat("E(G p & F ~p)", "ctlstar")).toBe(false);
+    expect(isSat("E(F G p & G F ~p)", "ctlstar")).toBe(false);
+  });
+
+  test("a quantified path contradicting another quantifier", () => {
+    expect(isSat("(A(G F p) & E(F G ~p))", "ctlstar")).toBe(false);
+  });
+
+  test("negating a validity is unsatisfiable", () => {
+    expect(isSat("~(A(G p) -> A(X G p))", "ctlstar")).toBe(false);
+    expect(isSat("~(E(F G p) -> E(G F p))", "ctlstar")).toBe(false);
+    expect(isSat("~(A(G p) -> E(G p))", "ctlstar")).toBe(false);
+  });
+
+  test("an LTL formula is satisfiable exactly when E of it is", () => {
+    // LTL satisfiability is existential over paths, which is what E expresses
+    for (const f of ["G F p", "F G p", "(p U q)", "(G p & F ~p)", "(F G p & G F ~p)"]) {
+      expect(isSat("E(" + f + ")", "ctlstar")).toBe(isSat(f, "ltl"));
+    }
+  });
+});
+
+describe("CTL* rejects formulas outside CTL*", () => {
+  test("a temporal operator still needs a quantifier", () => {
+    expect(() => parseFormula("G p", "ctlstar")).toThrow(/must appear inside a path quantifier/);
+    expect(() => parseFormula("F G p", "ctlstar")).toThrow(/must appear inside a path quantifier/);
+    expect(() => parseFormula("(p U q)", "ctlstar")).toThrow(/must appear inside a path quantifier/);
+  });
+
+  test("coalition operators are not CTL*", () => {
+    expect(() => parseFormula("<<a>>X p", "ctlstar")).toThrow(/belong to ATL\*/);
+    expect(() => parseFormula("<<>>G p", "ctlstar")).toThrow(/belong to ATL\*/);
+    expect(() => parseFormula("[[a]]G p", "ctlstar")).toThrow(/belong to ATL\*/);
   });
 });
 

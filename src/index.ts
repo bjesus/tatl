@@ -8,7 +8,8 @@
  *
  * Options:
  *   --verbose              Show all phases in detail
- *   --system ltl|ctl|atl   Logical system of the input (default: atl)
+ *   --system ltl|ctl|ctlstar|atl
+ *                          Logical system of the input (default: atl)
  *   --agents a,b           Assume extra agents not mentioned in the formula
  *   --dot [phase]          Output DOT graph (pretableau|initial|final)
  *   --html                 Output standalone HTML visualization
@@ -34,12 +35,12 @@ const dotIndex = args.indexOf("--dot");
 const dotPhase = dotIndex >= 0 ? (args[dotIndex + 1] as "pretableau" | "initial" | "final" || "final") : null;
 const htmlOutput = args.includes("--html");
 const systemIndex = args.indexOf("--system");
-const systemArg = systemIndex >= 0 ? (args[systemIndex + 1] ?? "").toLowerCase() : "atl";
-if (!["atl", "ctl", "ltl"].includes(systemArg)) {
-  console.error(`Error: unknown system '${systemArg}'. Use ltl, ctl or atl.`);
+const systemArg = normalizeSystem(systemIndex >= 0 ? args[systemIndex + 1] : "atl");
+if (systemArg === null) {
+  console.error(`Error: unknown system '${args[systemIndex + 1] ?? ""}'. Use ltl, ctl, ctlstar or atl.`);
   process.exit(1);
 }
-const system = systemArg as System;
+const system: System = systemArg;
 const agentsIndex = args.indexOf("--agents");
 const extraAgents = agentsIndex >= 0
   ? (args[agentsIndex + 1] ?? "").split(",").map((a) => a.trim()).filter(Boolean)
@@ -55,6 +56,15 @@ if (interactive) {
     process.exit(1);
   }
   solveAndPrint(formulaStr);
+}
+
+/** Accept ctl* as a friendlier spelling of ctlstar on the command line. */
+function normalizeSystem(value: string | undefined): System | null {
+  const v = (value ?? "").toLowerCase();
+  if (v === "ctl*") return "ctlstar";
+  return (["atl", "ctlstar", "ctl", "ltl"] as const).includes(v as System)
+    ? (v as System)
+    : null;
 }
 
 function extractFormulaArg(args: string[]): string | null {
@@ -153,7 +163,7 @@ Usage:
 
 Options:
   --verbose, -v                  Show detailed output for all phases
-  --system ltl|ctl|atl           Logical system of the input (default: atl)
+  --system <system>              ltl, ctl, ctlstar (or ctl*) or atl (default: atl)
   --agents a,b                   Assume extra agents beyond those in the formula
   --dot [pretableau|initial|final]   Output DOT (Graphviz) graph
   --html                         Output standalone HTML visualization
@@ -166,10 +176,11 @@ extra agents can change the answer:
   atl "(~<<>>X ~p & ~<<a>>X p)"              UNSATISFIABLE (a is every agent)
   atl "(~<<>>X ~p & ~<<a>>X p)" --agents b   SATISFIABLE   (b opposes a)
 
-LTL and CTL are the one-agent fragments of ATL* and are translated into it:
+LTL, CTL and CTL* are one-agent fragments of ATL* and are translated into it:
 
-  atl --system ltl "G F p"                   LTL:  infinitely often p
-  atl --system ctl "AG EF p"                 CTL:  p is always reachable
+  atl --system ltl "G F p"                   LTL:   infinitely often p
+  atl --system ctl "AG EF p"                 CTL:   p is always reachable
+  atl --system ctlstar "E(G F p)"            CTL*:  a path with p infinitely often
 
 Examples:
   atl "<<a>>X p"

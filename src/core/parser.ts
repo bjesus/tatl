@@ -78,14 +78,19 @@ class ParseError extends Error {
  *
  * which gives the translations
  *
- *   LTL   π         =>  <<a>>π      (π is read on a single path)
- *   CTL   A π       =>  <<>>π
- *   CTL   E π       =>  <<a>>π
+ *   LTL   π           =>  <<a>>π      (π is read on a single path)
+ *   CTL   A π / E π   =>  <<>>π / <<a>>π   (π one paired temporal operator)
+ *   CTL*  A π / E π   =>  <<>>π / <<a>>π   (π an arbitrary path formula)
  *
- * Both embeddings are only faithful when the agent set is exactly {a}; see
- * `systemAgents`.
+ * CTL* is exactly the one-agent fragment of ATL*: with a single agent the only
+ * coalitions are {} and {a}, which are the two path quantifiers, and path
+ * formulas are already unrestricted. The co-coalition [[A]]π adds nothing here
+ * either, since [[A]]π = ~<<A>>~π makes [[a]] and [[]] the duals of E and A.
+ *
+ * All of these embeddings are only faithful when the agent set is exactly {a};
+ * see `systemAgents`.
  */
-export type System = "atl" | "ctl" | "ltl";
+export type System = "atl" | "ctlstar" | "ctl" | "ltl";
 
 /** The single agent that LTL and CTL formulas are interpreted over. */
 export const SYSTEM_AGENT: Agent = "a";
@@ -97,6 +102,11 @@ export const SYSTEM_AGENT: Agent = "a";
  */
 export function systemAgents(system: System): readonly Agent[] {
   return system === "atl" ? [] : [SYSTEM_AGENT];
+}
+
+/** Systems whose path quantifiers are written A and E. */
+function usesPathQuantifiers(system: System): boolean {
+  return system === "ctl" || system === "ctlstar";
 }
 
 class Parser {
@@ -130,16 +140,24 @@ class Parser {
   /** Error for input left over once a complete formula has been parsed. */
   private trailingError(): ParseError {
     const ch = this.input[this.pos]!;
-    if (this.system === "ctl" && (ch === "U" || ch === "W")) {
-      return new ParseError(
-        `In CTL, '${ch}' must be paired with a path quantifier: write A[p ${ch} q] or E[p ${ch} q]`,
-        this.pos
-      );
+    if (usesPathQuantifiers(this.system) && (ch === "U" || ch === "W")) {
+      return new ParseError(this.unpairedMessage(ch), this.pos);
     }
     return new ParseError(
       `Unexpected character '${ch}' at position ${this.pos}`,
       this.pos
     );
+  }
+
+  private systemLabel(): string {
+    return this.system === "ctlstar" ? "CTL*" : this.system.toUpperCase();
+  }
+
+  /** Message for a temporal operator that is not under a path quantifier. */
+  private unpairedMessage(op: string): string {
+    return this.system === "ctl"
+      ? `In CTL, '${op}' must be paired with a path quantifier: write A[p ${op} q] or E[p ${op} q]`
+      : `In CTL*, '${op}' must appear inside a path quantifier: write A(p ${op} q) or E(p ${op} q)`;
   }
 
   private parseStateExpr(): StateFormula {
@@ -189,20 +207,24 @@ class Parser {
       return Neg(sub);
     }
 
-    // CTL: path quantifiers replace the coalition operators
-    if (this.system === "ctl") {
+    // CTL and CTL*: path quantifiers replace the coalition operators
+    if (usesPathQuantifiers(this.system)) {
       if (ch === "A" || ch === "E") {
-        return this.parseCtlQuantifier();
+        return this.system === "ctl"
+          ? this.parseCtlQuantifier()
+          : this.parseCtlStarQuantifier();
       }
       if (ch === "X" || ch === "G" || ch === "F") {
         throw new ParseError(
-          `In CTL, '${ch}' must be preceded by a path quantifier: write A${ch} or E${ch}`,
+          this.system === "ctl"
+            ? `In CTL, '${ch}' must be preceded by a path quantifier: write A${ch} or E${ch}`
+            : `In CTL*, '${ch}' must appear inside a path quantifier: write A(${ch} ...) or E(${ch} ...)`,
           this.pos
         );
       }
       if (this.lookAhead("<<") || ch === "[") {
         throw new ParseError(
-          "Coalition operators belong to ATL*; in CTL use the path quantifiers A and E",
+          `Coalition operators belong to ATL*; in ${this.systemLabel()} use the path quantifiers A and E`,
           this.pos
         );
       }
@@ -247,7 +269,8 @@ class Parser {
    * operators (&, |, U). To use infix operators, wrap in parens:
    *   <<a>>(G p & F q)    -- OK: parens contain the full expression
    *   <<a>>G p & <<b>>F q -- OK: parses as (<<a>>G p) & (<<b>>F q)
-   *   <<a>>G p & F q      -- parses as (<<a>>G p) & (F q) -- F q is state-level
+   *   <<a>>G p & F q      -- error: the trailing F q would be state-level, and
+   *                          temporal operators may not appear there
    */
   private parseCoalitionOp(): StateFormula {
     this.expect("<");
@@ -331,6 +354,22 @@ class Parser {
     );
   }
 
+  /**
+   * Parse a CTL* formula Qπ, where Q is A or E.
+   *
+   * Unlike CTL, π is an arbitrary path formula: temporal operators may be
+   * nested and combined under a single quantifier, as in A(G F p) or
+   * E(G p & F q). This is the same shape as ATL*'s <<A>>π, which is why CTL*
+   * is precisely the one-agent fragment of ATL*.
+   */
+  private parseCtlStarQuantifier(): StateFormula {
+    const quantifier = this.peek()!; // 'A' or 'E'
+    this.advance(1);
+    this.skipWhitespace();
+    const coalition: Coalition = quantifier === "A" ? [] : [SYSTEM_AGENT];
+    return Coal(coalition, this.parsePathPrimary());
+  }
+
   // ============================================================
   // Path formula parsing (after <<A>> or [[A]])
   // ============================================================
@@ -409,6 +448,28 @@ class Parser {
           "Coalition operators belong to ATL*; an LTL formula has no path quantifiers",
           this.pos
         );
+      }
+    }
+
+    // CTL*: a quantifier may be nested inside a path formula, and since there
+    // are no co-coalitions here, [...] is free to group like (...)
+    if (this.system === "ctlstar") {
+      if (this.lookAhead("<<") || this.lookAhead("[[")) {
+        throw new ParseError(
+          "Coalition operators belong to ATL*; in CTL* use the path quantifiers A and E",
+          this.pos
+        );
+      }
+      if (ch === "A" || ch === "E") {
+        return PState(this.parseCtlStarQuantifier());
+      }
+      if (ch === "[") {
+        this.advance(1);
+        this.skipWhitespace();
+        const inner = this.parsePathExpr();
+        this.skipWhitespace();
+        this.expect("]");
+        return inner;
       }
     }
 
@@ -530,13 +591,10 @@ class Parser {
   private expect(ch: string): void {
     if (this.pos >= this.input.length || this.input[this.pos] !== ch) {
       const got = this.input[this.pos] ?? "EOF";
-      // A stray U/W in CTL almost always means an unpaired temporal operator,
-      // which is the single most common mistake when writing CTL.
-      if (this.system === "ctl" && (got === "U" || got === "W")) {
-        throw new ParseError(
-          `In CTL, '${got}' must be paired with a path quantifier: write A[p ${got} q] or E[p ${got} q]`,
-          this.pos
-        );
+      // A stray U/W almost always means a temporal operator that is not under a
+      // path quantifier, the single most common mistake when writing CTL.
+      if (usesPathQuantifiers(this.system) && (got === "U" || got === "W")) {
+        throw new ParseError(this.unpairedMessage(got), this.pos);
       }
       throw new ParseError(
         `Expected '${ch}' at position ${this.pos}, got '${got}'`,

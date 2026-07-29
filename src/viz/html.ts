@@ -548,6 +548,7 @@ input.agent-add-input.visible { display: inline-block; }
         <select id="system-select" class="system-select" onchange="setSystem(this.value)">
           <option value="ltl">LTL &mdash; linear temporal logic</option>
           <option value="ctl">CTL &mdash; computation tree logic</option>
+          <option value="ctlstar">CTL* &mdash; full computation tree logic</option>
           <option value="atl" selected>ATL* &mdash; alternating-time temporal logic</option>
         </select>
         </div>
@@ -613,6 +614,20 @@ input.agent-add-input.visible { display: inline-block; }
           <button class="example-btn" onclick="setExample('~(AG p -> AX AG p)')">Negated expansion law (UNSAT)</button>
         </div>
 
+        <div class="examples" data-system="ctlstar" style="display:none">
+          <button class="example-btn" onclick="setExample('E(G F p)')">Some path, infinitely often p</button>
+          <button class="example-btn" onclick="setExample('A(F G p)')">Every path settles on p</button>
+          <button class="example-btn" onclick="setExample('E(G p & F q)')">One path: always p, eventually q</button>
+          <button class="example-btn" onclick="setExample('E(p U (q U r))')">Nested until</button>
+          <button class="example-btn" onclick="setExample('A(G F p -> F G q)')">Fairness implication</button>
+          <button class="example-btn" onclick="setExample('E(G F p & G F ~p)')">Alternating on one path</button>
+          <button class="example-btn" onclick="setExample('AG EF p')">CTL still works: p always reachable</button>
+          <button class="example-btn" onclick="setExample('A[G F p]')">Brackets group too</button>
+          <button class="example-btn" onclick="setExample('E(G p & F ~p)')">Always p yet eventually not p (UNSAT)</button>
+          <button class="example-btn" onclick="setExample('(A(G F p) & E(F G ~p))')">All paths hit p often, one settles on not p (UNSAT)</button>
+          <button class="example-btn" onclick="setExample('~(E(F G p) -> E(G F p))')">Negated validity (UNSAT)</button>
+        </div>
+
         <div class="examples" data-system="atl">
           <button class="example-btn" onclick="setExample('<<a>>X p')">Next</button>
           <button class="example-btn" onclick="setExample('<<a>>G p')">Always</button>
@@ -661,6 +676,21 @@ input.agent-add-input.visible { display: inline-block; }
           <div class="syntax-item"><code>A[p U q]</code> &mdash; <span class="katex-placeholder" data-tex="\\forall(p \\mathbin{\\mathcal{U}} q)"></span> until, on every path</div>
           <div class="syntax-item"><code>E[p U q]</code> &mdash; <span class="katex-placeholder" data-tex="\\exists(p \\mathbin{\\mathcal{U}} q)"></span> until, on some path</div>
           <div class="syntax-item ref-note">Every temporal operator must be paired with a quantifier: <code>AG p</code>, never <code>G p</code>, and <code>A[p U q]</code>, never <code>(p U q)</code>. Round brackets also work: <code>A(p U q)</code>. Unpaired operators are CTL*, not CTL.</div>
+        </div>
+
+        <div class="syntax-ref" data-system="ctlstar" style="display:none">
+          <div class="syntax-item"><code>p</code> &mdash; atomic proposition (lowercase)</div>
+          <div class="syntax-item"><code>~p</code> &mdash; <span class="katex-placeholder" data-tex="\\neg p"></span></div>
+          <div class="syntax-item"><code>(p & q)</code> &mdash; <span class="katex-placeholder" data-tex="(p \\wedge q)"></span></div>
+          <div class="syntax-item"><code>(p | q)</code> &mdash; <span class="katex-placeholder" data-tex="(p \\vee q)"></span></div>
+          <div class="syntax-item"><code>(p -> q)</code> &mdash; <span class="katex-placeholder" data-tex="(p \\to q)"></span></div>
+          <div class="syntax-item"><code>A(...)</code> &mdash; <span class="katex-placeholder" data-tex="\\forall \\pi"></span> on every path</div>
+          <div class="syntax-item"><code>E(...)</code> &mdash; <span class="katex-placeholder" data-tex="\\exists \\pi"></span> on some path</div>
+          <div class="syntax-item">Inside a quantifier: <code>X</code> <span class="katex-placeholder" data-tex="\\bigcirc"></span>, <code>G</code> <span class="katex-placeholder" data-tex="\\Box"></span>, <code>F</code> <span class="katex-placeholder" data-tex="\\Diamond"></span>, <code>U</code> <span class="katex-placeholder" data-tex="\\mathcal{U}"></span>, <code>R</code> <span class="katex-placeholder" data-tex="\\mathcal{R}"></span></div>
+          <div class="syntax-item"><code>E(G F p)</code> &mdash; <span class="katex-placeholder" data-tex="\\exists\\Box\\Diamond p"></span> nesting is allowed</div>
+          <div class="syntax-item"><code>E(G p & F q)</code> &mdash; one path satisfying both</div>
+          <div class="syntax-item"><code>A[G F p]</code> &mdash; brackets group like parentheses</div>
+          <div class="syntax-item ref-note">Unlike CTL, a quantifier may be applied to any path formula, so temporal operators can be nested and combined. Every temporal operator must still sit inside an A or an E.</div>
         </div>
 
         <div class="syntax-ref" data-system="atl">
@@ -889,6 +919,11 @@ var SYSTEMS = {
     placeholder: 'e.g.  AG EF p',
     showAgents: false,
     note: 'Every temporal operator is paired with a path quantifier, A (all paths) or E (some path). Solved as the one-agent ATL* fragment.'
+  },
+  ctlstar: {
+    placeholder: 'e.g.  E(G F p)',
+    showAgents: false,
+    note: 'A and E apply to any path formula, so temporal operators may be nested and combined freely. This is exactly the one-agent fragment of ATL*.'
   },
   atl: {
     placeholder: 'e.g.  <<a>>X p',

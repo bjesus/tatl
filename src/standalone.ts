@@ -40,9 +40,11 @@ const flagsWithValue = new Set(["--dot", "--port", "--agents", "--system"]);
 
 function getSystem(): System {
   const idx = args.indexOf("--system");
-  const value = idx >= 0 ? (args[idx + 1] ?? "").toLowerCase() : "atl";
-  if (!["atl", "ctl", "ltl"].includes(value)) {
-    console.error(`Error: unknown system '${value}'. Use ltl, ctl or atl.`);
+  const raw = idx >= 0 ? (args[idx + 1] ?? "") : "atl";
+  // ctl* is a friendlier spelling of ctlstar on the command line
+  const value = raw.toLowerCase() === "ctl*" ? "ctlstar" : raw.toLowerCase();
+  if (!["atl", "ctlstar", "ctl", "ltl"].includes(value)) {
+    console.error(`Error: unknown system '${raw}'. Use ltl, ctl, ctlstar or atl.`);
     process.exit(1);
   }
   return value as System;
@@ -261,7 +263,7 @@ Web server options:
 
 CLI options:
   --verbose, -v                    Show detailed output for all phases
-  --system ltl|ctl|atl             Logical system of the input (default: atl)
+  --system <system>                ltl, ctl, ctlstar (or ctl*) or atl (default: atl)
   --agents a,b                     Assume extra agents beyond those in the formula
   --dot [pretableau|initial|final] Output DOT (Graphviz) graph
   --html                           Output standalone HTML visualization
@@ -274,10 +276,11 @@ extra agents can change the answer:
   atl "(~<<>>X ~p & ~<<a>>X p)"              UNSATISFIABLE (a is every agent)
   atl "(~<<>>X ~p & ~<<a>>X p)" --agents b   SATISFIABLE   (b opposes a)
 
-LTL and CTL are the one-agent fragments of ATL* and are translated into it:
+LTL, CTL and CTL* are one-agent fragments of ATL* and are translated into it:
 
-  atl --system ltl "G F p"         LTL:  infinitely often p
-  atl --system ctl "AG EF p"       CTL:  p is always reachable
+  atl --system ltl "G F p"         LTL:   infinitely often p
+  atl --system ctl "AG EF p"       CTL:   p is always reachable
+  atl --system ctlstar "E(G F p)"  CTL*:  a path with p infinitely often
 
 Examples:
   atl                              Open web UI in browser

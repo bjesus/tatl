@@ -436,6 +436,10 @@ input.agent-add-input.visible { display: inline-block; }
   border-left: 3px solid var(--accent);
 }
 .about-credits p { font-size: 0.85em; line-height: 1.7; }
+.about-author {
+  margin-bottom: 0; padding-top: 14px; border-top: 1px solid var(--border);
+}
+.about-author p { font-size: 0.82em; color: var(--text-muted); }
 
 /* Graph options bar */
 .graph-options {
@@ -524,15 +528,9 @@ input.agent-add-input.visible { display: inline-block; }
     <div class="app-header">
       <h1>ATL* Tableau Solver</h1>
       <div class="subtitle">
-        This tool checks whether a formula of <strong title="Alternating-time Temporal Logic star" style="cursor:help;text-decoration:underline;text-decoration-style:dotted;text-underline-offset:2px">ATL*</strong> is <em>satisfiable</em>: that is,
-        whether there exists a concurrent game structure and a state where the formula is true.
-        ATL reasons about what coalitions of agents can achieve in multi-agent systems,
-        using operators like <span class="katex-placeholder" data-tex="\\langle\\!\\langle A \\rangle\\!\\rangle \\Box p"></span> (coalition <span class="katex-placeholder" data-tex="A"></span> can ensure <span class="katex-placeholder" data-tex="p"></span> always holds).
-        ATL* extends ATL by allowing arbitrary path formulas inside coalition operators,
-        e.g. <span class="katex-placeholder" data-tex="\\langle\\!\\langle A \\rangle\\!\\rangle (\\Box p \\wedge \\Diamond q)"></span> &mdash;
-        coalition <span class="katex-placeholder" data-tex="A"></span> has a strategy ensuring
-        <span class="katex-placeholder" data-tex="p"></span> always and <span class="katex-placeholder" data-tex="q"></span> eventually,
-        on the <em>same</em> path.
+        Checks whether a temporal logic formula is <em>satisfiable</em> &mdash; whether some
+        model has a state where it holds &mdash; by building a tableau phase by phase.
+        Choose a system below; LTL, CTL and CTL* are solved as fragments of ATL*.
       </div>
       <div class="credit">
         Based on <a href="https://dl.acm.org/doi/abs/10.1145/1614431.1614434" target="_blank" rel="noopener">Goranko &amp; Shkatov (2009)</a> &middot; <a href="https://theses.hal.science/tel-01176908" target="_blank" rel="noopener">David (2015)</a> &middot; <a href="https://github.com/theoremprover-museum/TATL" target="_blank" rel="noopener">TATL</a>
@@ -881,6 +879,13 @@ input.agent-add-input.visible { display: inline-block; }
         Original OCaml implementation: <a href="https://github.com/theoremprover-museum/TATL" target="_blank" rel="noopener" style="color:var(--accent)">TATL on GitHub</a>
       </p>
     </div>
+
+    <div class="about-section about-author">
+      <p>
+        Implemented by Yo&rsquo;av Moshe &middot;
+        <a href="mailto:logic@yoavmoshe.com" style="color:var(--accent)">logic@yoavmoshe.com</a>
+      </p>
+    </div>
   </div>
 </div>
 
@@ -904,31 +909,31 @@ var renderIdCounter = 0;
 var pendingSolve = null;
 // Agents added by hand, i.e. assumed present but never mentioned in the formula
 var extraAgents = [];
-// Logical system the input is written in: 'ltl', 'ctl' or 'atl'
+// Logical system the input is written in: 'ltl', 'ctl', 'ctlstar' or 'atl'
 var currentSystem = 'atl';
 
 var SYSTEMS = {
   ltl: {
     placeholder: 'e.g.  G F p',
-    // LTL and CTL are read over a single agent, so the agent set is not the
-    // user's business in those systems.
+    // LTL, CTL and CTL* are read over a single agent, so the agent set is not
+    // the user's business in those systems.
     showAgents: false,
-    note: 'Formulas describe one infinite path. Satisfiable means some path satisfies the formula. Solved as the one-agent ATL* fragment.'
+    note: 'Linear temporal logic: a formula describes one infinite path, built with X (next), G (always), F (eventually), U (until) and R (release), as in G (p -> F q). It is satisfiable when some path satisfies it. Solved here as the one-agent fragment of ATL*.'
   },
   ctl: {
     placeholder: 'e.g.  AG EF p',
     showAgents: false,
-    note: 'Every temporal operator is paired with a path quantifier, A (all paths) or E (some path). Solved as the one-agent ATL* fragment.'
+    note: 'Computation tree logic: time branches, and every temporal operator is paired with a path quantifier, A (on all paths) or E (on some path) — AG p, EF p, A[p U q]. Satisfiable when some transition system has a state where it holds.'
   },
   ctlstar: {
     placeholder: 'e.g.  E(G F p)',
     showAgents: false,
-    note: 'A and E apply to any path formula, so temporal operators may be nested and combined freely. This is exactly the one-agent fragment of ATL*.'
+    note: 'CTL* drops the pairing rule of CTL: A and E apply to any path formula, so temporal operators nest and combine freely. E(G p & F q) asks for a single path that is always p and eventually q, which CTL cannot express. This is exactly the one-agent fragment of ATL*.'
   },
   atl: {
     placeholder: 'e.g.  <<a>>X p',
     showAgents: true,
-    note: 'Coalition operators quantify over strategies of a group of agents. LTL and CTL are the one-agent fragments of this system.'
+    note: 'Alternating-time temporal logic: coalition operators replace the path quantifiers. <<A>>G p says coalition A has a strategy ensuring p always holds, whatever the other agents do, and ATL* allows any path formula inside, as in <<a>>(G p & F q). Satisfiable when some concurrent game structure has a state where it holds.'
   }
 };
 
@@ -1849,16 +1854,16 @@ function displayResult(result, solveState) {
     '<div class="banner-stat" title="Phase 2 (Prestate Elimination): States remaining after removing prestates and rewiring edges into direct state-to-state transitions. This is the starting point for state elimination."><div class="num">' + result.stats.initialStates + '</div><div class="label">Initial</div></div>' +
     '<div class="banner-stat" title="Phase 3 (State Elimination): States surviving after removing defective states via rules E2 (missing successors) and E3 (unrealized eventualities). The formula is satisfiable iff this is greater than 0."><div class="num">' + result.stats.finalStates + '</div><div class="label">Final</div></div>' +
     '</div>';
-  var agentsHtml;
-  if (currentSystem === 'atl') {
+  // The agent set is only meaningful for ATL*; LTL, CTL and CTL* always run
+  // over the single agent their translation introduces.
+  // Use the system the result was computed for, not whatever the dropdown says
+  // now, in case it changed while the solve was in flight.
+  var solvedSystem = (solveState && solveState.system) || currentSystem;
+  var agentsHtml = '';
+  if (solvedSystem === 'atl') {
     var agentSet = (result.allAgents && result.allAgents.length)
       ? '{' + result.allAgents.join(', ') + '}' : '\u2205';
     agentsHtml = '<div class="banner-agents" title="The agent set this answer was computed for. Coalition operators are interpreted relative to it.">Agents: ' + agentSet + '</div>';
-  } else {
-    // The tableau works on the ATL* translation, so name it rather than let the
-    // notation look like it came out of nowhere.
-    agentsHtml = '<div class="banner-agents" title="' + currentSystem.toUpperCase() +
-      ' is solved as the one-agent fragment of ATL*. This is the translated formula, and it is the notation used in the tableau below.">as ATL*</div>';
   }
   if (result.satisfiable) {
     banner.className = 'result-banner sat';

@@ -776,6 +776,9 @@ function stateElimination(
   suppressed: Set<NodeId>,
   eliminations: EliminationRecord[]
 ): void {
+  // Realization results are shared across all E3 checks of this pass.
+  const oracle = new RealizationOracle(states, edges, allAgents, suppressed);
+
   for (const [id, state] of states) {
     if (suppressed.has(id)) continue;
 
@@ -788,7 +791,7 @@ function stateElimination(
     // E3: Check eventuality realization
     const nonImmReal = getEvNonImmReal(state, suppressed);
     if (nonImmReal.length > 0) {
-      if (!verifEvNonImmReal(nonImmReal, id, state, states, edges, allAgents, suppressed)) {
+      if (!verifEvNonImmReal(nonImmReal, id, state, oracle)) {
         removeState(id, state, suppressed, eliminations, "E3");
       }
     }
@@ -1021,42 +1024,20 @@ function getTuple(frm: StateFormula, eventList: FormulaTuple[]): FormulaTuple | 
  * Verify all non-immediately-realized eventualities of a state.
  *
  * Reference: TATL elimination_star.ml — verif_ev_non_imm_real
+ * (realization itself is computed as a least fixpoint; see isRealizable)
  */
 function verifEvNonImmReal(
   lstEv: Array<{ ev: FormulaTuple; residual: PathFormula }>,
   stateId: NodeId,
   state: State,
-  states: Map<NodeId, State>,
-  edges: SolidEdge[],
-  allAgents: Coalition,
-  suppressed: Set<NodeId>
+  oracle: RealizationOracle
 ): boolean {
   for (const { ev, residual } of lstEv) {
-    // Fresh memoization tables for each eventuality verification
-    const hPst = new Map<string, PstEntry>();
-    const hSt = new Set<string>();
-
-    hSt.add(memoKeySt(stateId, residual));
-
-    const ok = verifSucc(ev, stateId, state, residual, states, edges, allAgents, suppressed, hPst, hSt);
-    if (!ok) return false;
+    if (!oracle.isRealizable(ev, stateId, state, residual)) {
+      return false;
+    }
   }
   return true;
-}
-
-/** Memoization entry for prestate verification */
-interface PstEntry {
-  value: number; // 0=exploring, 1=OK, 2=FAIL
-  lst: Array<{ state: State; evTuple: FormulaTuple }>;
-  lst2: Array<{ state: State; evTuple: FormulaTuple }>;
-}
-
-function memoKeyPst(prestateId: NodeId, path: PathFormula): string {
-  return `${prestateId}|${pathKey(path)}`;
-}
-
-function memoKeySt(stateId: NodeId, path: PathFormula): string {
-  return `${stateId}|${pathKey(path)}`;
 }
 
 /**
@@ -1218,160 +1199,113 @@ function getSuccPrestates(
   return result;
 }
 
-/**
- * DFS verification of eventuality realization through successor chains.
- *
- * For a state s with an eventuality ev and residual path formula:
- * 1. Get consistent successor prestates
- * 2. For EACH prestate (universal), find at least one successor state (existential)
- *    where either:
- *    - whatfalse reduces the residual to State(Top) (realized), or
- *    - recursive verification succeeds
- *
- * Reference: TATL elimination_star.ml — verif_succ (the core DFS with memoization)
- */
-function verifSucc(
-  ev: FormulaTuple,
-  stateId: NodeId,
-  state: State,
-  path: PathFormula,
-  states: Map<NodeId, State>,
-  edges: SolidEdge[],
-  allAgents: Coalition,
-  suppressed: Set<NodeId>,
-  hPst: Map<string, PstEntry>,
-  hSt: Set<string>
-): boolean {
-  // Get consistent successor prestates
-  const lstPrestateSucc = getSuccToBeVerified(ev, stateId, state, edges, allAgents, suppressed);
-
-  // For each prestate (universal): must find one successor state that works
-  return verifPrestate(lstPrestateSucc, ev, path, states, edges, allAgents, suppressed, hPst, hSt);
+/** Key for a realization node (state, eventuality tuple, residual). */
+function realizationKey(stateId: NodeId, tupleFrm: StateFormula, residual: PathFormula): string {
+  return `${stateId}|${stateKey(tupleFrm)}|${pathKey(residual)}`;
 }
 
 /**
- * Universal check over prestates: ALL prestates must be satisfiable.
+ * Check whether an eventuality with a non-trivial residual is realizable
+ * from a state.
  *
- * Reference: TATL elimination_star.ml — verif_prestate (inner function of verif_succ)
+ * The search space is an AND-OR graph over nodes (state, tuple, residual):
+ * a node is realizable iff for EVERY consistent successor prestate
+ * (universal) there is AT LEAST ONE successor state (existential) where the
+ * residual — recomputed by whatfalse against that state — either reduces to
+ * State(Top) (realized there) or yields a realizable node.
+ *
+ * Realizability is the least fixpoint of that rule: a witness must be
+ * well-founded, so cycles that merely postpone the eventuality fail, while a
+ * node may be shared by several AND-branches of the witness (it is a DAG).
+ *
+ * One oracle serves a whole state-elimination pass: different states reach
+ * the same (state, tuple, residual) nodes, so the AND-OR graph and its
+ * fixpoint are shared across queries. The cache must not outlive the pass —
+ * `suppressed` grows while a pass runs, and a node expanded early in the
+ * pass may reference states suppressed later in it. That staleness is safe:
+ * any suppression makes the dovetail loop run another pass with a fresh
+ * oracle, so the terminating pass answers every query against the final
+ * suppressed set.
  */
-function verifPrestate(
-  lstPrestate: NodeId[],
-  ev: FormulaTuple,
-  path: PathFormula,
-  states: Map<NodeId, State>,
-  edges: SolidEdge[],
-  allAgents: Coalition,
-  suppressed: Set<NodeId>,
-  hPst: Map<string, PstEntry>,
-  hSt: Set<string>
-): boolean {
-  for (let i = 0; i < lstPrestate.length; i++) {
-    const pId = lstPrestate[i]!;
-    const pKey = memoKeyPst(pId, path);
+class RealizationOracle {
+  // Successor structure per node: one group per consistent prestate (AND);
+  // within a group, one option per successor state (OR). An option is either
+  // null (residual fully realized at that successor) or a follow-up node key.
+  private structure = new Map<string, Array<Array<string | null>>>();
+  private realizable = new Set<string>();
 
-    // Check if we've already explored this prestate with this path
-    const cached = hPst.get(pKey);
-    if (cached) {
-      if (cached.value === 1) {
-        // Already verified OK
-        continue;
+  constructor(
+    private states: Map<NodeId, State>,
+    private edges: SolidEdge[],
+    private allAgents: Coalition,
+    private suppressed: Set<NodeId>
+  ) {}
+
+  isRealizable(ev: FormulaTuple, stateId: NodeId, state: State, residual: PathFormula): boolean {
+    const rootKey = realizationKey(stateId, ev.frm, residual);
+    if (!this.structure.has(rootKey)) {
+      this.expand(ev, state, residual, rootKey);
+      this.propagate();
+    }
+    return this.realizable.has(rootKey);
+  }
+
+  /** BFS-expand the AND-OR graph reachable from a root node. */
+  private expand(ev: FormulaTuple, state: State, residual: PathFormula, rootKey: string): void {
+    const queue: Array<{ state: State; tuple: FormulaTuple; residual: PathFormula; key: string }> = [
+      { state, tuple: ev, residual, key: rootKey },
+    ];
+    this.structure.set(rootKey, []);
+
+    while (queue.length > 0) {
+      const node = queue.shift()!;
+      const groups: Array<Array<string | null>> = [];
+      // Empty prestate list (continuation resolved or not an eventuality)
+      // means a vacuous AND: the node is realizable.
+      const prestates = getSuccToBeVerified(
+        node.tuple, node.state.id, node.state, this.edges, this.allAgents, this.suppressed
+      );
+      for (const prestateId of prestates) {
+        const options: Array<string | null> = [];
+        for (const { state: succ, evTuple } of getSuccPrestates(node.tuple, prestateId, this.edges, this.states, this.suppressed)) {
+          const nextResidual = whatfalse(node.residual, succ.formulas, evTuple.pathFrm);
+          if (nextResidual.kind === "state" && nextResidual.sub.kind === "top") {
+            options.push(null);
+          } else {
+            const key = realizationKey(succ.id, evTuple.frm, nextResidual);
+            if (!this.structure.has(key)) {
+              this.structure.set(key, []);
+              queue.push({ state: succ, tuple: evTuple, residual: nextResidual, key });
+            }
+            options.push(key);
+          }
+        }
+        groups.push(options);
       }
-      if (cached.value === 2) {
-        // Already verified FAIL
-        return false;
-      }
-      // value === 0: still exploring, try next state in list
-      if (cached.lst.length === 0) {
-        hPst.set(pKey, { value: 2, lst: [], lst2: [] });
-        return false;
-      }
-
-      // Try next state from the cached list
-      const stateV = cached.lst[0]!;
-      const tail = cached.lst.slice(1);
-      const sKey = memoKeySt(stateV.state.id, path);
-
-      if (hSt.has(sKey)) {
-        // Already visited this state — skip and try another
-        const newTail = tail;
-        const newLst2 = cached.lst2.length === 0 && tail.length === 0 ? [] : [...cached.lst2, stateV];
-        hPst.set(pKey, { value: 0, lst: newTail, lst2: newLst2 });
-        // Retry this prestate with remaining states
-        i--; // retry current prestate
-        continue;
-      }
-
-      hSt.add(sKey);
-      hPst.set(pKey, { value: 0, lst: tail, lst2: cached.lst2 });
-
-      if (verifState(stateV.state, stateV.evTuple, path, states, edges, allAgents, suppressed, hPst, hSt)) {
-        hPst.set(pKey, { value: 1, lst: tail, lst2: cached.lst2 });
-        continue; // This prestate is OK, move to next
-      } else {
-        // Retry from the beginning of the full prestate list
-        return verifPrestate(lstPrestate, ev, path, states, edges, allAgents, suppressed, hPst, hSt);
-      }
-    } else {
-      // First visit: get successor states from this prestate
-      const lstSucc = getSuccPrestates(ev, pId, edges, states, suppressed);
-
-      if (lstSucc.length === 0) {
-        return false; // No successor states — fail
-      }
-
-      const stateV = lstSucc[0]!;
-      const tail = lstSucc.slice(1);
-      const sKey = memoKeySt(stateV.state.id, path);
-
-      if (hSt.has(sKey)) {
-        // Already visited this state — skip
-        const newLst2 = tail.length === 0 ? [] : [stateV];
-        hPst.set(pKey, { value: 0, lst: tail, lst2: newLst2 });
-        // Retry this prestate
-        i--;
-        continue;
-      }
-
-      hPst.set(pKey, { value: 0, lst: tail, lst2: [] });
-      hSt.add(sKey);
-
-      if (verifState(stateV.state, stateV.evTuple, path, states, edges, allAgents, suppressed, hPst, hSt)) {
-        hPst.set(pKey, { value: 1, lst: tail, lst2: [] });
-        continue; // This prestate OK
-      } else {
-        // Retry from the beginning
-        return verifPrestate(lstPrestate, ev, path, states, edges, allAgents, suppressed, hPst, hSt);
-      }
+      this.structure.set(node.key, groups);
     }
   }
 
-  return true; // All prestates verified
-}
-
-/**
- * Existential check over states: at least ONE state must realize the eventuality.
- *
- * Reference: TATL elimination_star.ml — verif_state (inner function of verif_succ)
- */
-function verifState(
-  s: State,
-  evTuple: FormulaTuple,
-  path: PathFormula,
-  states: Map<NodeId, State>,
-  edges: SolidEdge[],
-  allAgents: Coalition,
-  suppressed: Set<NodeId>,
-  hPst: Map<string, PstEntry>,
-  hSt: Set<string>
-): boolean {
-  const ensFrm = s.formulas;
-  const residual = whatfalse(path, ensFrm, evTuple.pathFrm);
-
-  if (residual.kind === "state" && residual.sub.kind === "top") {
-    // Fully realized!
-    return true;
+  /**
+   * Least fixpoint: propagate realizability until stable. Nodes added since
+   * the last run cannot change earlier verdicts (a node's groups are fixed at
+   * expansion and only reference nodes expanded in the same BFS), so the
+   * existing realizable set stays valid and only grows.
+   */
+  private propagate(): void {
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const [key, groups] of this.structure) {
+        if (this.realizable.has(key)) continue;
+        const ok = groups.every((options) =>
+          options.some((opt) => opt === null || this.realizable.has(opt))
+        );
+        if (ok) {
+          this.realizable.add(key);
+          changed = true;
+        }
+      }
+    }
   }
-
-  // Continue search with the new residual
-  return verifSucc(evTuple, s.id, s, residual, states, edges, allAgents, suppressed, hPst, hSt);
 }

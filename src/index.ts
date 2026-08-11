@@ -17,7 +17,7 @@
  */
 
 import { parseFormula, systemAgents, type System } from "./core/parser.ts";
-import { printFormula } from "./core/printer.ts";
+import { notationFor } from "./core/printer.ts";
 import { runTableau } from "./core/tableau.ts";
 import { textSummary, textVerbose, toDot } from "./viz/text.ts";
 import { generateHTML } from "./viz/html.ts";
@@ -41,6 +41,7 @@ if (systemArg === null) {
   process.exit(1);
 }
 const system: System = systemArg;
+const notation = notationFor(system);
 const agentsIndex = args.indexOf("--agents");
 const extraAgents = agentsIndex >= 0
   ? (args[agentsIndex + 1] ?? "").split(",").map((a) => a.trim()).filter(Boolean)
@@ -105,14 +106,14 @@ function solveAndPrint(formulaStr: string): void {
   }
 
   if (dotPhase) {
-    console.log(toDot(result, dotPhase));
+    console.log(toDot(result, dotPhase, { notation }));
     return;
   }
 
   if (verbose) {
-    console.log(textVerbose(result));
+    console.log(textVerbose(result, notation));
   } else {
-    console.log(textSummary(result));
+    console.log(textSummary(result, notation));
   }
 
   process.exit(result.satisfiable ? 0 : 1);

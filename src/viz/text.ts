@@ -13,19 +13,19 @@ import {
   type MoveVector,
   type SolidEdge,
 } from "../core/types.ts";
-import { printFormula, printFormulaSet, printFormulaUnicode, printMoveVector } from "../core/printer.ts";
+import { printFormula, printFormulaSet, printFormulaUnicode, printMoveVector, type Notation } from "../core/printer.ts";
 
 /**
  * Generate a complete text summary of a tableau result.
  */
-export function textSummary(result: TableauResult): string {
+export function textSummary(result: TableauResult, notation: Notation = "atl"): string {
   const lines: string[] = [];
 
   lines.push("=".repeat(60));
   lines.push("ATL* Tableau Decision Procedure");
   lines.push("=".repeat(60));
   lines.push("");
-  lines.push(`Input formula: ${printFormula(result.inputFormula)}`);
+  lines.push(`Input formula: ${printFormula(result.inputFormula, notation)}`);
   const agents = [...result.allAgents];
   lines.push(`Agents: {${agents.join(", ")}}`);
   lines.push("");
@@ -58,7 +58,7 @@ export function textSummary(result: TableauResult): string {
     lines.push("Satisfying states:");
     for (const [id, state] of result.finalTableau.states) {
       if (state.formulas.has(result.inputFormula)) {
-        lines.push(`  ${id}: ${printFormulaSet(state.formulas)}`);
+        lines.push(`  ${id}: ${printFormulaSet(state.formulas, notation)}`);
       }
     }
   } else {
@@ -72,25 +72,25 @@ export function textSummary(result: TableauResult): string {
 /**
  * Generate verbose text showing all states in each phase.
  */
-export function textVerbose(result: TableauResult): string {
-  const lines: string[] = [textSummary(result), ""];
+export function textVerbose(result: TableauResult, notation: Notation = "atl"): string {
+  const lines: string[] = [textSummary(result, notation), ""];
 
   // Pretableau detail
   lines.push("=== Pretableau States ===");
   for (const [id, state] of result.pretableau.states) {
-    lines.push(`  ${id}: ${printFormulaSet(state.formulas)}`);
+    lines.push(`  ${id}: ${printFormulaSet(state.formulas, notation)}`);
   }
   lines.push("");
   lines.push("=== Pretableau Prestates ===");
   for (const [id, ps] of result.pretableau.prestates) {
-    lines.push(`  ${id}: ${printFormulaSet(ps.formulas)}`);
+    lines.push(`  ${id}: ${printFormulaSet(ps.formulas, notation)}`);
   }
   lines.push("");
 
   // Initial tableau states
   lines.push("=== Initial Tableau States ===");
   for (const [id, state] of result.initialTableau.states) {
-    lines.push(`  ${id}: ${printFormulaSet(state.formulas)}`);
+    lines.push(`  ${id}: ${printFormulaSet(state.formulas, notation)}`);
   }
   lines.push("");
   lines.push("=== Initial Tableau Edges ===");
@@ -105,7 +105,7 @@ export function textVerbose(result: TableauResult): string {
     lines.push("  (empty)");
   }
   for (const [id, state] of result.finalTableau.states) {
-    lines.push(`  ${id}: ${printFormulaSet(state.formulas)}`);
+    lines.push(`  ${id}: ${printFormulaSet(state.formulas, notation)}`);
   }
   lines.push("");
   lines.push("=== Final Tableau Edges ===");
@@ -125,13 +125,15 @@ export interface DotOptions {
   detailedLabels?: boolean;
   /** Show eliminated states (only for "final" phase) as faded red nodes */
   showEliminated?: boolean;
+  /** Surface syntax for coalition operators (default: ATL* brackets) */
+  notation?: Notation;
 }
 
 /**
  * Format a formula set for DOT tooltip (one formula per line, Unicode).
  */
-function formulaSetTooltip(fs: StateFormulaSet): string {
-  return fs.toArray().map(printFormulaUnicode).join("\n");
+function formulaSetTooltip(fs: StateFormulaSet, notation: Notation): string {
+  return fs.toArray().map((f) => printFormulaUnicode(f, notation)).join("\n");
 }
 
 /**
@@ -144,16 +146,16 @@ function compactLabel(id: string, fs: StateFormulaSet): string {
 /**
  * Generate a detailed label: state ID + all formulas.
  */
-function detailedLabel(id: string, fs: StateFormulaSet): string {
-  const formulas = fs.toArray().map(printFormulaUnicode);
+function detailedLabel(id: string, fs: StateFormulaSet, notation: Notation): string {
+  const formulas = fs.toArray().map((f) => printFormulaUnicode(f, notation));
   return id + "\n" + "\u2500".repeat(Math.min(id.length + 6, 20)) + "\n" + formulas.join("\n");
 }
 
 /**
  * Build a node label based on options.
  */
-function nodeLabel(id: string, fs: StateFormulaSet, detailed: boolean): string {
-  return detailed ? detailedLabel(id, fs) : compactLabel(id, fs);
+function nodeLabel(id: string, fs: StateFormulaSet, detailed: boolean, notation: Notation): string {
+  return detailed ? detailedLabel(id, fs, notation) : compactLabel(id, fs);
 }
 
 /**
@@ -183,6 +185,7 @@ export function toDot(
 ): string {
   const detailed = options.detailedLabels ?? false;
   const showEliminated = options.showEliminated ?? false;
+  const notation = options.notation ?? "atl";
   const allAgents = result.allAgents;
   const lines: string[] = [];
   lines.push("digraph tableau {");
@@ -196,17 +199,17 @@ export function toDot(
   if (phase === "pretableau") {
     // Prestates as dashed ellipses
     for (const [id, ps] of result.pretableau.prestates) {
-      const tooltip = formulaSetTooltip(ps.formulas);
-      const label = nodeLabel(id, ps.formulas, detailed);
+      const tooltip = formulaSetTooltip(ps.formulas, notation);
+      const label = nodeLabel(id, ps.formulas, detailed, notation);
       lines.push(`  "${id}" [label="${escDot(label)}", shape=ellipse, style="dashed,filled", fillcolor="#fafafa", tooltip="${escDot(tooltip)}"];`);
     }
     // States as boxes
     for (const [id, state] of result.pretableau.states) {
-      const tooltip = formulaSetTooltip(state.formulas);
+      const tooltip = formulaSetTooltip(state.formulas, notation);
       const hasInput = state.formulas.has(result.inputFormula);
       const fill = hasInput ? "#d4edda" : "#f8f9fa";
       const border = hasInput ? "#82c091" : "#d0d0d0";
-      const label = nodeLabel(id, state.formulas, detailed);
+      const label = nodeLabel(id, state.formulas, detailed, notation);
       lines.push(`  "${id}" [label="${escDot(label)}", fillcolor="${fill}", color="${border}", tooltip="${escDot(tooltip)}"];`);
     }
     // Dashed edges (prestate → state expansion)
@@ -227,9 +230,9 @@ export function toDot(
       for (const rec of result.eliminations) {
         if (!eliminationMap.has(rec.stateId)) {
           const reason = rec.rule === "E2"
-            ? `E2: next-time formula ${printFormulaUnicode(rec.formula)} has no successor`
+            ? `E2: next-time formula ${printFormulaUnicode(rec.formula, notation)} has no successor`
             : rec.rule === "E3"
-              ? `E3: eventuality ${printFormulaUnicode(rec.formula)} unrealized`
+              ? `E3: eventuality ${printFormulaUnicode(rec.formula, notation)} unrealized`
               : `E1: patent inconsistency`;
           eliminationMap.set(rec.stateId, reason);
         }
@@ -238,12 +241,12 @@ export function toDot(
 
     // Surviving states
     for (const [id, state] of tableau.states) {
-      const tooltip = formulaSetTooltip(state.formulas);
+      const tooltip = formulaSetTooltip(state.formulas, notation);
       const hasInput = state.formulas.has(result.inputFormula);
       const fill = hasInput ? "#dcfce7" : "#f8f9fa";
       const border = hasInput ? "#86d997" : "#d0d0d0";
       const penwidth = hasInput ? "2" : "1";
-      const label = nodeLabel(id, state.formulas, detailed);
+      const label = nodeLabel(id, state.formulas, detailed, notation);
       lines.push(`  "${id}" [label="${escDot(label)}", fillcolor="${fill}", color="${border}", penwidth=${penwidth}, tooltip="${escDot(tooltip)}"];`);
     }
 
@@ -253,9 +256,9 @@ export function toDot(
         if (tableau.states.has(id)) continue;
         const reason = eliminationMap.get(id) || "eliminated";
         const elimLabel = detailed
-          ? detailedLabel(id + " \u2717", state.formulas)
+          ? detailedLabel(id + " \u2717", state.formulas, notation)
           : `${id} \u2717\n${reason}`;
-        const tooltip = reason + "\n\n" + formulaSetTooltip(state.formulas);
+        const tooltip = reason + "\n\n" + formulaSetTooltip(state.formulas, notation);
         lines.push(`  "${id}" [label="${escDot(elimLabel)}", fillcolor="#fee2e2", color="#e5a0a0", fontcolor="#999", style="filled,rounded,dashed", tooltip="${escDot(tooltip)}"];`);
       }
 

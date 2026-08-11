@@ -4,7 +4,7 @@
  */
 
 import { parseFormula, systemAgents, type System } from "../core/parser.ts";
-import { printFormula, printFormulaSet, printFormulaLatex, printFormulaSetLatex, printMoveVector, printMoveVectorLatex } from "../core/printer.ts";
+import { printFormula, printFormulaSet, printFormulaLatex, printFormulaSetLatex, printMoveVector, printMoveVectorLatex, notationFor, type Notation } from "../core/printer.ts";
 import { runTableau } from "../core/tableau.ts";
 import { toDot } from "../viz/text.ts";
 import type { TableauResult } from "../core/types.ts";
@@ -41,7 +41,7 @@ ctx.onmessage = async (e: MessageEvent) => {
       });
 
       ctx.postMessage({ type: 'status', stage: 'Preparing results...' });
-      const serialized = serializeResult(result);
+      const serialized = serializeResult(result, notationFor(system));
 
       ctx.postMessage({ type: 'result', result: serialized });
 
@@ -59,17 +59,17 @@ ctx.onmessage = async (e: MessageEvent) => {
   }
 };
 
-function serializeResult(result: TableauResult) {
+function serializeResult(result: TableauResult, notation: Notation) {
   const inputKey = result.inputFormula;
-  const inputLatex = printFormulaLatex(result.inputFormula);
+  const inputLatex = printFormulaLatex(result.inputFormula, notation);
   const allAgents = result.allAgents;
 
   function serializeStates(states: typeof result.pretableau.states) {
     const out: Record<string, { formulas: string; formulasLatex: string; hasInput: boolean }> = {};
     for (const [id, state] of states) {
       out[id] = {
-        formulas: printFormulaSet(state.formulas),
-        formulasLatex: printFormulaSetLatex(state.formulas),
+        formulas: printFormulaSet(state.formulas, notation),
+        formulasLatex: printFormulaSetLatex(state.formulas, notation),
         hasInput: state.formulas.has(inputKey),
       };
     }
@@ -88,8 +88,8 @@ function serializeResult(result: TableauResult) {
   const pretableauPrestates: Record<string, { formulas: string; formulasLatex: string }> = {};
   for (const [id, ps] of result.pretableau.prestates) {
     pretableauPrestates[id] = {
-      formulas: printFormulaSet(ps.formulas),
-      formulasLatex: printFormulaSetLatex(ps.formulas),
+      formulas: printFormulaSet(ps.formulas, notation),
+      formulasLatex: printFormulaSetLatex(ps.formulas, notation),
     };
   }
 
@@ -97,9 +97,9 @@ function serializeResult(result: TableauResult) {
   const eliminations = result.eliminations.map((rec) => ({
     stateId: rec.stateId,
     rule: rec.rule,
-    formulaLatex: printFormulaLatex(rec.formula),
-    formulaAscii: printFormula(rec.formula),
-    stateFormulasLatex: printFormulaSetLatex(rec.stateFormulas),
+    formulaLatex: printFormulaLatex(rec.formula, notation),
+    formulaAscii: printFormula(rec.formula, notation),
+    stateFormulasLatex: printFormulaSetLatex(rec.stateFormulas, notation),
   }));
 
   return {
@@ -132,14 +132,14 @@ function serializeResult(result: TableauResult) {
     },
     // DOT variants
     dots: {
-      pretableau: toDot(result, "pretableau"),
-      initial: toDot(result, "initial"),
-      final: toDot(result, "final"),
-      pretableauDetailed: toDot(result, "pretableau", { detailedLabels: true }),
-      initialDetailed: toDot(result, "initial", { detailedLabels: true }),
-      finalDetailed: toDot(result, "final", { detailedLabels: true }),
-      finalEliminated: toDot(result, "final", { showEliminated: true }),
-      finalDetailedEliminated: toDot(result, "final", { detailedLabels: true, showEliminated: true }),
+      pretableau: toDot(result, "pretableau", { notation }),
+      initial: toDot(result, "initial", { notation }),
+      final: toDot(result, "final", { notation }),
+      pretableauDetailed: toDot(result, "pretableau", { notation, detailedLabels: true }),
+      initialDetailed: toDot(result, "initial", { notation, detailedLabels: true }),
+      finalDetailed: toDot(result, "final", { notation, detailedLabels: true }),
+      finalEliminated: toDot(result, "final", { notation, showEliminated: true }),
+      finalDetailedEliminated: toDot(result, "final", { notation, detailedLabels: true, showEliminated: true }),
     },
   };
 }

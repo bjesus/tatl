@@ -78,7 +78,7 @@ describe("LTL translation", () => {
   });
 
   test("temporal operators nest freely", () => {
-    expect(translate("G F p", "ltl")).toBe("<<a>>G ((_top U p))");
+    expect(translate("G F p", "ltl")).toBe("<<a>>G (_top U p)");
     expect(translate("F G p", "ltl")).toBe("<<a>>(_top U G p)");
   });
 

@@ -4,12 +4,6 @@
  */
 
 import { type TableauResult } from "../core/types.ts";
-import {
-  printFormula,
-  printFormulaSet,
-  printFormulaLatex,
-} from "../core/printer.ts";
-import { toDot } from "./text.ts";
 
 export function generateHTML(result?: TableauResult): string {
   return `<!DOCTYPE html>

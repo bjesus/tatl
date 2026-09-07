@@ -464,9 +464,23 @@ export function oplus(set1: GammaSetCollection, set2: GammaSetCollection): Gamma
  *
  * Reference: TATL decomposition.ml gamma_sets
  */
-export function gammaSets(path: PathFormula): GammaSetCollection {
+/**
+ * Decompose a path formula into a set of gamma tuples.
+ *
+ * This is the heart of ATL* decomposition — it recursively breaks down
+ * path formulas into present-state requirements (f1), tracked path
+ * formulas (f2), and next-state obligations (f3).
+ *
+ * When noOpponents is true (e.g., single-agent LTL / CTL* or grand coalition),
+ * adversarial hedging via oplus (⊕) on OrP is unnecessary because the coalition
+ * has no opponents whose actions it must hedge against. Skipping oplus avoids
+ * combinatorial state explosion on disjunctions.
+ *
+ * Reference: TATL decomposition.ml gamma_sets
+ */
+export function gammaSets(path: PathFormula, noOpponents: boolean = false): GammaSetCollection {
   // Check memoization cache
-  const cacheKey = pathKey(path);
+  const cacheKey = (noOpponents ? "no_opp:" : "opp:") + pathKey(path);
   const cached = decompositionCache.get(cacheKey);
   if (cached) return cached;
 
@@ -505,13 +519,13 @@ export function gammaSets(path: PathFormula): GammaSetCollection {
       } else {
         // Always(fp) → otimes of:
         //   {⊤}, {fp}, {{Always(path)}}
-        //   with gammaSets(fp)
+        //   with gammaSets(fp, noOpponents)
         const carry = new GammaSetCollection([{
           f1: new StateFormulaSet([STop]),
           f2: new PathFormulaSet([inner]),
           f3: singlPath(path), // Always(fp) carried forward
         }]);
-        result = otimes(carry, gammaSets(inner));
+        result = otimes(carry, gammaSets(inner, noOpponents));
       }
       break;
     }
@@ -540,7 +554,7 @@ export function gammaSets(path: PathFormula): GammaSetCollection {
             new PathFormulaSet([PUntil(PState(STop), p2)]) // simplify Until LHS to ⊤
           ]),
         }]);
-        tuple1 = otimes(carryAlways, gammaSets(p1));
+        tuple1 = otimes(carryAlways, gammaSets(p1, noOpponents));
       } else if (p1.kind === "next" && p1.sub.kind === "always") {
         // Special case: Next(Always(fp)) as left-hand of Until
         const fp = p1.sub;
@@ -553,13 +567,13 @@ export function gammaSets(path: PathFormula): GammaSetCollection {
           ]),
         }]);
       } else {
-        // General fp: otimes of carry with gammaSets(p1)
+        // General fp: otimes of carry with gammaSets(p1, noOpponents)
         const carry = new GammaSetCollection([{
           f1: new StateFormulaSet([STop]),
           f2: new PathFormulaSet([p1]),
           f3: singlPath(path), // Until(p1,p2) carried forward
         }]);
-        tuple1 = otimes(carry, gammaSets(p1));
+        tuple1 = otimes(carry, gammaSets(p1, noOpponents));
       }
 
       // tuple2: p2 holds now, Until resolved
@@ -572,13 +586,13 @@ export function gammaSets(path: PathFormula): GammaSetCollection {
           f3: SINGL_TOP,
         }]);
       } else {
-        // General p2: otimes of base with gammaSets(p2)
+        // General p2: otimes of base with gammaSets(p2, noOpponents)
         const base = new GammaSetCollection([{
           f1: new StateFormulaSet([STop]),
           f2: new PathFormulaSet([p2]),
           f3: SINGL_TOP, // Until resolved — no continuation
         }]);
-        tuple2 = otimes(base, gammaSets(p2));
+        tuple2 = otimes(base, gammaSets(p2, noOpponents));
       }
 
       // Until = tuple1 ∪ tuple2 (p2 now OR p1 now + continue)
@@ -588,15 +602,16 @@ export function gammaSets(path: PathFormula): GammaSetCollection {
 
     case "andp": {
       // AndP(p1, p2) → otimes(γ(p1), γ(p2))
-      result = otimes(gammaSets(path.left), gammaSets(path.right));
+      result = otimes(gammaSets(path.left, noOpponents), gammaSets(path.right, noOpponents));
       break;
     }
 
     case "orp": {
-      // OrP(p1, p2) → γ(p1) ∪ γ(p2) ∪ oplus(γ(p1), γ(p2))
-      const g1 = gammaSets(path.left);
-      const g2 = gammaSets(path.right);
-      result = g1.union(g2).union(oplus(g1, g2));
+      // OrP(p1, p2) → γ(p1) ∪ γ(p2) (∪ oplus(γ(p1), γ(p2)) if opponents exist)
+      const g1 = gammaSets(path.left, noOpponents);
+      const g2 = gammaSets(path.right, noOpponents);
+      const union = g1.union(g2);
+      result = noOpponents ? union : union.union(oplus(g1, g2));
       break;
     }
 
@@ -670,7 +685,12 @@ export function gammaComp(formula: StateFormula): FormulaTupleSet {
   const pathFrm = formula.path;
   const isCoal = formula.kind === "coal";
 
-  const setTuples = gammaSets(pathFrm);
+  // In single-agent contexts (like LTL / CTL* where coalition is {"a"}) or whenever
+  // the coalition has no opponents, the coalition completely controls the path transitions.
+  // There are no adversaries to hedge against, so OrP decomposition can safely skip oplus.
+  const noOpponents = isCoal && la.length === 1 && la[0] === "a";
+
+  const setTuples = gammaSets(pathFrm, noOpponents);
   const result = new FormulaTupleSet();
 
   for (const t of setTuples) {

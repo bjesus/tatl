@@ -612,6 +612,30 @@ class Parser {
 }
 
 /**
+ * For an LTL formula parsed as Coal([SYSTEM_AGENT], path), lift any top-level
+ * disjunctions (orp) in the path formula to state-level disjunctions (SOr).
+ *
+ * In LTL, satisfiability of φ ∨ ψ is equivalent to satisfiability of <<a>>φ ∨ <<a>>ψ.
+ * In ATL*, <<a>>(φ ∨ ψ) introduces adversarial hedging (the third option / oplus)
+ * which accounts for potential opponents. In the single-agent LTL setting, lifting
+ * top-level disjunctions avoids this state explosion and keeps the tableau tree minimal.
+ */
+function liftLtlTopLevelDisjunctions(formula: StateFormula): StateFormula {
+  if (formula.kind !== "coal" || formula.coalition.length !== 1 || formula.coalition[0] !== SYSTEM_AGENT) {
+    return formula;
+  }
+
+  function liftPath(path: PathFormula): StateFormula {
+    if (path.kind === "orp") {
+      return SOr(liftPath(path.left), liftPath(path.right));
+    }
+    return Coal([SYSTEM_AGENT], path);
+  }
+
+  return liftPath(formula.path);
+}
+
+/**
  * Parse a formula string into a StateFormula AST, then apply NNF transformation.
  *
  * LTL and CTL inputs are translated into their ATL* equivalents over a single
@@ -619,7 +643,10 @@ class Parser {
  */
 export function parseFormula(input: string, system: System = "atl"): StateFormula {
   const parser = new Parser(input.trim(), system);
-  const raw = parser.parse();
+  let raw = parser.parse();
+  if (system === "ltl") {
+    raw = liftLtlTopLevelDisjunctions(raw);
+  }
   return toNNF(raw);
 }
 
@@ -630,3 +657,4 @@ export function parseFormulaRaw(input: string, system: System = "atl"): StateFor
   const parser = new Parser(input.trim(), system);
   return parser.parse();
 }
+

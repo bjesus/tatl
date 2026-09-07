@@ -151,6 +151,20 @@ describe("LTL satisfiability", () => {
     expect(isSat("(G F p & G F ~p)", "ltl")).toBe(true);
   });
 
+  test("disjunctions do not suffer from combinatorial state explosion", () => {
+    // Top-level disjunction GF p | GF ~p
+    const res1 = runTableau(parseFormula("GF p | GF ~p", "ltl"), systemAgents("ltl"));
+    expect(res1.satisfiable).toBe(true);
+    expect(res1.initialTableau.states.size).toBe(8);
+    expect(res1.initialTableau.edges.length).toBe(16);
+
+    // Nested disjunction F(GF p | GF ~p)
+    const res2 = runTableau(parseFormula("F(GF p | GF ~p)", "ltl"), systemAgents("ltl"));
+    expect(res2.satisfiable).toBe(true);
+    expect(res2.initialTableau.states.size).toBe(13);
+    expect(res2.initialTableau.edges.length).toBe(29);
+  });
+
   test("propositional contradictions are unsatisfiable", () => {
     expect(isSat("(p & ~p)", "ltl")).toBe(false);
   });

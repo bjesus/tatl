@@ -6,8 +6,10 @@
 import { parseFormula, systemAgents, type System } from "../core/parser.ts";
 import { printFormula, printFormulaSet, printFormulaLatex, printFormulaSetLatex, printMoveVector, printMoveVectorLatex, notationFor, type Notation } from "../core/printer.ts";
 import { runTableau } from "../core/tableau.ts";
-import { toDot } from "../viz/text.ts";
-import type { TableauResult } from "../core/types.ts";
+import { toDot, modelToDot } from "../viz/text.ts";
+import { extractModel } from "../core/model.ts";
+import { proofHtml, serializeModel } from "../viz/proof.ts";
+import { stateKey, type TableauResult } from "../core/types.ts";
 
 // Helper to access worker global scope safely
 const ctx: any = self;
@@ -61,8 +63,13 @@ ctx.onmessage = async (e: MessageEvent) => {
 
 function serializeResult(result: TableauResult, notation: Notation) {
   const inputKey = result.inputFormula;
-  const inputLatex = printFormulaLatex(result.inputFormula, notation);
+  const inputLatex = printFormulaLatex(result.originalFormula, notation);
+  const simplifiedLatex = stateKey(result.originalFormula) !== stateKey(result.inputFormula)
+    ? printFormulaLatex(result.inputFormula, notation)
+    : null;
   const allAgents = result.allAgents;
+  const model = result.satisfiable ? extractModel(result) : null;
+  const initialIds = new Set(result.initialStateIds);
 
   function serializeStates(states: typeof result.pretableau.states) {
     const out: Record<string, { formulas: string; formulasLatex: string; hasInput: boolean }> = {};
@@ -70,7 +77,7 @@ function serializeResult(result: TableauResult, notation: Notation) {
       out[id] = {
         formulas: printFormulaSet(state.formulas, notation),
         formulasLatex: printFormulaSetLatex(state.formulas, notation),
-        hasInput: state.formulas.has(inputKey),
+        hasInput: initialIds.has(id) || state.formulas.has(inputKey),
       };
     }
     return out;
@@ -105,7 +112,11 @@ function serializeResult(result: TableauResult, notation: Notation) {
   return {
     satisfiable: result.satisfiable,
     inputLatex,
+    simplifiedLatex,
     allAgents: [...allAgents],
+    model: model ? serializeModel(model, notation, printFormula) : null,
+    proofHtml: result.satisfiable ? null : proofHtml(result, notation),
+    unreachable: result.unreachable,
     stats: {
       pretableauStates: result.pretableau.states.size,
       pretableauPrestates: result.pretableau.prestates.size,
@@ -113,6 +124,7 @@ function serializeResult(result: TableauResult, notation: Notation) {
       initialEdges: result.initialTableau.edges.length,
       finalStates: result.finalTableau.states.size,
       finalEdges: result.finalTableau.edges.length,
+      modelStates: model ? model.states.length : null,
       eliminationsE2: eliminations.filter((e) => e.rule === "E2").length,
       eliminationsE3: eliminations.filter((e) => e.rule === "E3").length,
     },
@@ -132,6 +144,7 @@ function serializeResult(result: TableauResult, notation: Notation) {
     },
     // DOT variants
     dots: {
+      model: model ? modelToDot(model, notation) : null,
       pretableau: toDot(result, "pretableau", { notation }),
       initial: toDot(result, "initial", { notation }),
       final: toDot(result, "final", { notation }),

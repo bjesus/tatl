@@ -11,7 +11,8 @@
  *   --system ltl|ctl|ctlstar|atl
  *                          Logical system of the input (default: atl)
  *   --agents a,b           Assume extra agents not mentioned in the formula
- *   --dot [phase]          Output DOT graph (pretableau|initial|final)
+ *   --plain                Plain procedure, no optimisation
+ *   --dot [phase]          Output DOT graph (model|pretableau|initial|final)
  *   --html                 Output standalone HTML visualization
  *   --interactive          Interactive mode (read formulas from stdin)
  */
@@ -19,8 +20,10 @@
 import { parseFormula, systemAgents, type System } from "./core/parser.ts";
 import { notationFor } from "./core/printer.ts";
 import { runTableau } from "./core/tableau.ts";
-import { textSummary, textVerbose, toDot } from "./viz/text.ts";
+import { textSummary, textVerbose, toDot, modelToDot } from "./viz/text.ts";
 import { generateHTML } from "./viz/html.ts";
+import { extractModel } from "./core/model.ts";
+import { setOptions, PLAIN_OPTIONS } from "./core/options.ts";
 
 const args = process.argv.slice(2);
 
@@ -32,7 +35,8 @@ if (args.length === 0 || args.includes("--help") || args.includes("-h")) {
 const verbose = args.includes("--verbose") || args.includes("-v");
 const interactive = args.includes("--interactive") || args.includes("-i");
 const dotIndex = args.indexOf("--dot");
-const dotPhase = dotIndex >= 0 ? (args[dotIndex + 1] as "pretableau" | "initial" | "final" || "final") : null;
+const dotPhase = dotIndex >= 0 ? (args[dotIndex + 1] as "model" | "pretableau" | "initial" | "final" || "final") : null;
+if (args.includes("--plain")) setOptions(PLAIN_OPTIONS);
 const htmlOutput = args.includes("--html");
 const systemIndex = args.indexOf("--system");
 const systemArg = normalizeSystem(systemIndex >= 0 ? args[systemIndex + 1] : "atl");
@@ -72,7 +76,7 @@ function extractFormulaArg(args: string[]): string | null {
   const skipNext = new Set(["--dot", "--agents", "--system"]);
   const skipFlags = new Set([
     "--verbose", "-v", "--interactive", "-i",
-    "--html", "--help", "-h",
+    "--html", "--help", "-h", "--plain",
   ]);
 
   const parts: string[] = [];
@@ -105,6 +109,15 @@ function solveAndPrint(formulaStr: string): void {
     return;
   }
 
+  if (dotPhase === "model") {
+    const model = extractModel(result);
+    if (!model) {
+      console.error(result.satisfiable ? "Model too large to extract" : "Unsatisfiable: no model");
+      process.exit(1);
+    }
+    console.log(modelToDot(model, notation));
+    return;
+  }
   if (dotPhase) {
     console.log(toDot(result, dotPhase, { notation }));
     return;
@@ -166,7 +179,8 @@ Options:
   --verbose, -v                  Show detailed output for all phases
   --system <system>              ltl, ctl, ctlstar (or ctl*) or atl (default: atl)
   --agents a,b                   Assume extra agents beyond those in the formula
-  --dot [pretableau|initial|final]   Output DOT (Graphviz) graph
+  --plain                        Plain procedure, no optimisation (larger tableaux)
+  --dot [model|pretableau|initial|final]   Output DOT (Graphviz) graph
   --html                         Output standalone HTML visualization
   --interactive, -i              Interactive REPL mode
 

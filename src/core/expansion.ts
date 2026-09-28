@@ -18,13 +18,23 @@
 import {
   type StateFormula,
   type FormulaTuple,
+  type Coalition,
   STop,
+  Neg,
+  SAnd,
   PathFormulaSet,
   StateFormulaSet,
   formulaTupleKey,
 } from "./types.ts";
 import { gammaComp } from "./decomposition.ts";
-import { isPatentlyInconsistentTuples } from "./formula.ts";
+import { isPropositional, stateHasUntil } from "./formula.ts";
+
+function isGrandCoalition(f: StateFormula, allAgents: Coalition): boolean {
+  return f.kind === "coal" && f.coalition.length === allAgents.length &&
+    f.coalition.every((a, i) => a === allAgents[i]);
+}
+import { nnfState } from "./nnf.ts";
+import { getOptions } from "./options.ts";
 
 // ============================================================
 // TupleSet — a set of FormulaTuples (one candidate state)
@@ -142,7 +152,7 @@ function product(set1: SetOfTupleSets, set2: SetOfTupleSets): SetOfTupleSets {
  *
  * Reference: TATL construction.ml saturation
  */
-function saturation(formula: StateFormula): SetOfTupleSets {
+function saturation(formula: StateFormula, allAgents: Coalition): SetOfTupleSets {
   switch (formula.kind) {
     // Primitives — return singleton tuple in singleton set
     case "top":
@@ -160,11 +170,30 @@ function saturation(formula: StateFormula): SetOfTupleSets {
 
     case "and":
       // Alpha: product of both sides
-      return product(saturation(formula.left), saturation(formula.right));
+      return product(saturation(formula.left, allAgents), saturation(formula.right, allAgents));
 
-    case "or":
-      // Beta: union of both sides
-      return saturation(formula.left).union(saturation(formula.right));
+    case "or": {
+      // Beta: union of both sides.
+      //
+      // Semantic branching: φ ∨ ψ ≡ φ ∨ (¬φ ∧ ψ). When ¬φ adds no
+      // eventuality (φ propositional, or a grand-coalition ◇-formula whose
+      // negation is a □-formula) the second branch gets ¬φ, so the two
+      // branches describe disjoint worlds instead of overlapping ones.
+      let left = formula.left;
+      let right = formula.right;
+      const o = getOptions();
+      if (o.semanticBranching) {
+        const nl = nnfState(Neg(left));
+        const nr = nnfState(Neg(right));
+        const t = o.semanticBranchingTemporal;
+        if (isPropositional(left) || (t && isGrandCoalition(left, allAgents) && !stateHasUntil(nl))) {
+          right = SAnd(nl, right);
+        } else if (isPropositional(right) || (t && isGrandCoalition(right, allAgents) && !stateHasUntil(nr))) {
+          left = SAnd(nr, left);
+        }
+      }
+      return saturation(left, allAgents).union(saturation(right, allAgents));
+    }
 
     case "coal":
     case "cocoal": {
@@ -176,7 +205,7 @@ function saturation(formula: StateFormula): SetOfTupleSets {
       }
 
       // Gamma: decompose via gammaComp, then recursively saturate residuals
-      const gammaComponents = gammaComp(formula);
+      const gammaComponents = gammaComp(formula, allAgents);
       let result = new SetOfTupleSets();
 
       for (const t of gammaComponents) {
@@ -188,7 +217,7 @@ function saturation(formula: StateFormula): SetOfTupleSets {
         }]);
 
         // Recursively saturate the state-level residual from decomposition
-        const residualSaturation = saturation(t.frm);
+        const residualSaturation = saturation(t.frm, allAgents);
 
         // Product: the original annotated tuple × the saturated residual
         const combined = product(
@@ -217,10 +246,10 @@ function saturation(formula: StateFormula): SetOfTupleSets {
  *
  * Reference: TATL construction.ml rule_sr
  */
-export function ruleSR(formulas: StateFormulaSet): SetOfTupleSets {
+export function ruleSR(formulas: StateFormulaSet, allAgents: Coalition): SetOfTupleSets {
   let result = new SetOfTupleSets();
   for (const f of formulas) {
-    result = product(saturation(f), result);
+    result = product(saturation(f, allAgents), result);
   }
   return result;
 }

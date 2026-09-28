@@ -87,6 +87,28 @@ export function isLiteral(f: StateFormula): boolean {
 }
 
 /**
+ * A state formula with no coalition operator: built from literals, ∧ and ∨.
+ */
+export function isPropositional(f: StateFormula): boolean {
+  switch (f.kind) {
+    case "top": case "bot": case "atom": return true;
+    case "neg": return isPropositional(f.sub);
+    case "and": case "or": return isPropositional(f.left) && isPropositional(f.right);
+    case "coal": case "cocoal": return false;
+  }
+}
+
+/** Whether a state formula mentions an Until anywhere (so it can create an eventuality). */
+export function stateHasUntil(f: StateFormula): boolean {
+  switch (f.kind) {
+    case "top": case "bot": case "atom": return false;
+    case "neg": return stateHasUntil(f.sub);
+    case "and": case "or": return stateHasUntil(f.left) || stateHasUntil(f.right);
+    case "coal": case "cocoal": return containsEventualityOperator(f.path);
+  }
+}
+
+/**
  * Check if a set of state formulas is patently inconsistent.
  *
  * A set is patently inconsistent if:
@@ -102,8 +124,8 @@ export function isPatentlyInconsistent(fs: StateFormulaSet): boolean {
     if (isLiteral(f)) literals.add(f);
   }
 
-  // Check Top ∧ Bot
-  if (literals.has(STop) && literals.has(SBot)) return true;
+  // ⊥ is inconsistent on its own
+  if (literals.has(SBot)) return true;
 
   // Check p ∧ ¬p
   for (const f of literals) {
@@ -125,7 +147,7 @@ export function isPatentlyInconsistentTuples(tuples: Iterable<FormulaTuple>): bo
     if (isLiteral(t.frm)) literals.add(t.frm);
   }
 
-  if (literals.has(STop) && literals.has(SBot)) return true;
+  if (literals.has(SBot)) return true;
 
   for (const f of literals) {
     if (literals.has(Neg(f))) return true;

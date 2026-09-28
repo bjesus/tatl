@@ -20,6 +20,8 @@
  * - TATL OCaml implementation: github.com/theoremprover-museum/TATL
  */
 
+import { getOptions } from "./options.ts";
+
 // An agent is just a name (string). Both letters and numbers are allowed.
 export type Agent = string;
 
@@ -195,14 +197,41 @@ export function coalitionComplement(a: Coalition, allAgents: Coalition): Coaliti
 // Canonical keys (for hashing and equality)
 // ============================================================
 
+/**
+ * Operands of a nested binary connective, flattened: (A ∧ B) ∧ C → [A, B, C].
+ * Used both for keys (when ∧/∨ are treated as associative and commutative)
+ * and for printing.
+ */
+export function stateOperands(f: StateFormula, kind: "and" | "or"): StateFormula[] {
+  if (f.kind !== kind) return [f];
+  return [...stateOperands(f.left, kind), ...stateOperands(f.right, kind)];
+}
+
+export function pathOperands(f: PathFormula, kind: "andp" | "orp"): PathFormula[] {
+  if (f.kind !== kind) return [f];
+  return [...pathOperands(f.left, kind), ...pathOperands(f.right, kind)];
+}
+
+function acKey(keys: string[], op: string): string {
+  const unique = [...new Set(keys)].sort();
+  if (unique.length === 1) return unique[0]!;
+  return `(${unique.join(op)})`;
+}
+
 export function stateKey(f: StateFormula): string {
   switch (f.kind) {
     case "top": return "T";
     case "bot": return "F";
     case "atom": return f.name;
     case "neg": return `~${stateKey(f.sub)}`;
-    case "and": return `(${stateKey(f.left)}&${stateKey(f.right)})`;
-    case "or": return `(${stateKey(f.left)}|${stateKey(f.right)})`;
+    case "and":
+      return getOptions().acKeys
+        ? acKey(stateOperands(f, "and").map(stateKey), "&")
+        : `(${stateKey(f.left)}&${stateKey(f.right)})`;
+    case "or":
+      return getOptions().acKeys
+        ? acKey(stateOperands(f, "or").map(stateKey), "|")
+        : `(${stateKey(f.left)}|${stateKey(f.right)})`;
     case "coal": return `<<${f.coalition.join(",")}>>@${pathKey(f.path)}`;
     case "cocoal": return `[[${f.coalition.join(",")}]]@${pathKey(f.path)}`;
   }
@@ -212,8 +241,14 @@ export function pathKey(f: PathFormula): string {
   switch (f.kind) {
     case "state": return `S{${stateKey(f.sub)}}`;
     case "negp": return `~P${pathKey(f.sub)}`;
-    case "andp": return `(${pathKey(f.left)}&P${pathKey(f.right)})`;
-    case "orp": return `(${pathKey(f.left)}|P${pathKey(f.right)})`;
+    case "andp":
+      return getOptions().acKeys
+        ? acKey(pathOperands(f, "andp").map(pathKey), "&P")
+        : `(${pathKey(f.left)}&P${pathKey(f.right)})`;
+    case "orp":
+      return getOptions().acKeys
+        ? acKey(pathOperands(f, "orp").map(pathKey), "|P")
+        : `(${pathKey(f.left)}|P${pathKey(f.right)})`;
     case "next": return `X${pathKey(f.sub)}`;
     case "always": return `G${pathKey(f.sub)}`;
     case "until": return `(${pathKey(f.left)}U${pathKey(f.right)})`;
@@ -348,6 +383,13 @@ export class PathFormulaSet {
 
   isEmpty(): boolean { return this._map.size === 0; }
 
+  isSubsetOfSet(other: PathFormulaSet): boolean {
+    for (const key of this._map.keys()) {
+      if (!other._map.has(key)) return false;
+    }
+    return true;
+  }
+
   union(other: PathFormulaSet): PathFormulaSet {
     const result = this.clone();
     for (const f of other) result.add(f);
@@ -440,11 +482,36 @@ export interface Tableau {
 
 export type EliminationRule = "E1" | "E2" | "E3";
 
+/**
+ * Why an eventuality could not be realized from a state: the successor
+ * prestate none of whose states works, and why each of them fails.
+ */
+export interface RealizationFailure {
+  stateId: NodeId;
+  eventuality: StateFormula;
+  residual: PathFormula;
+  /** null when the node has no consistent successor prestate at all */
+  prestateId: NodeId | null;
+  /** Set when this node was already explained earlier in the same proof */
+  seeAbove?: boolean;
+  options: Array<{
+    stateId: NodeId;
+    residual: PathFormula;
+    status: "eliminated" | "unrealizable" | "cycle" | "truncated";
+    failure?: RealizationFailure;
+  }>;
+}
+
+export type Explanation =
+  | { kind: "E2"; moveVector: MoveVector; prestateId: NodeId; successors: NodeId[] }
+  | { kind: "E3"; eventuality: StateFormula; residual: PathFormula; failure: RealizationFailure };
+
 export interface EliminationRecord {
   stateId: NodeId;
   rule: EliminationRule;
   formula: StateFormula;
   stateFormulas: StateFormulaSet;
+  explanation?: Explanation;
 }
 
 export interface TableauResult {
@@ -452,7 +519,16 @@ export interface TableauResult {
   pretableau: Pretableau;
   initialTableau: Tableau;
   finalTableau: Tableau;
+  /** The formula the tableau was built for (after preprocessing) */
   inputFormula: StateFormula;
+  /** The formula as parsed, before preprocessing */
+  originalFormula: StateFormula;
   allAgents: Coalition;
+  /** States the initial prestate expands to; the formula is satisfiable iff one survives */
+  initialStateIds: NodeId[];
   eliminations: EliminationRecord[];
+  /** Surviving states dropped from the final tableau as unreachable from any initial state */
+  unreachable: NodeId[];
+  /** Realization oracle of the terminating elimination pass */
+  realization: unknown;
 }

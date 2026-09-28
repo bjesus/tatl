@@ -16,8 +16,32 @@ import {
   type Coalition,
   StateFormulaSet,
   PathFormulaSet,
+  stateOperands,
+  pathOperands,
 } from "./types.ts";
 import type { System } from "./parser.ts";
+
+/** ◇π is encoded as ⊤ U π; printers show it as an eventuality again. */
+function asEventually(f: PathFormula): PathFormula | null {
+  if (f.kind === "until" && f.left.kind === "state" && f.left.sub.kind === "top") return f.right;
+  return null;
+}
+
+/**
+ * The synthetic obligation ⟨⟨Σ⟩⟩○⊤ that every state without a next-time
+ * formula receives, and ⊤ itself, say nothing about a state. Both are hidden
+ * when the label has anything else to show.
+ */
+export function displayFormulas(fs: StateFormulaSet): StateFormula[] {
+  const all = fs.toArray();
+  const informative = all.filter((f) => {
+    if (f.kind === "top") return false;
+    if ((f.kind === "coal" || f.kind === "cocoal") && f.path.kind === "next" &&
+        f.path.sub.kind === "state" && f.path.sub.sub.kind === "top") return false;
+    return true;
+  });
+  return informative.length > 0 ? informative : all.filter((f) => f.kind === "top").slice(0, 1);
+}
 
 // ============================================================
 // Notation
@@ -113,9 +137,9 @@ export function printStateAscii(f: StateFormula, n: Notation = "atl"): string {
         return `~(${printStateAscii(f.sub, n)})`;
       return `~${printStateAscii(f.sub, n)}`;
     case "and":
-      return `(${printStateAscii(f.left, n)} & ${printStateAscii(f.right, n)})`;
+      return `(${stateOperands(f, "and").map((x) => printStateAscii(x, n)).join(" & ")})`;
     case "or":
-      return `(${printStateAscii(f.left, n)} | ${printStateAscii(f.right, n)})`;
+      return `(${stateOperands(f, "or").map((x) => printStateAscii(x, n)).join(" | ")})`;
     case "coal": case "cocoal": {
       const q = quantifier(f.kind, f.coalition, n);
       const path = printPathAscii(f.path, n);
@@ -138,15 +162,18 @@ export function printPathAscii(f: PathFormula, n: Notation = "atl"): string {
     case "negp":
       return `~${printPathAscii(f.sub, n)}`;
     case "andp":
-      return `(${printPathAscii(f.left, n)} & ${printPathAscii(f.right, n)})`;
+      return `(${pathOperands(f, "andp").map((x) => printPathAscii(x, n)).join(" & ")})`;
     case "orp":
-      return `(${printPathAscii(f.left, n)} | ${printPathAscii(f.right, n)})`;
+      return `(${pathOperands(f, "orp").map((x) => printPathAscii(x, n)).join(" | ")})`;
     case "next":
       return `X ${printPathAsciiAtom(f.sub, n)}`;
     case "always":
       return `G ${printPathAsciiAtom(f.sub, n)}`;
-    case "until":
+    case "until": {
+      const ev = asEventually(f);
+      if (ev) return `F ${printPathAsciiAtom(ev, n)}`;
       return `(${printPathAscii(f.left, n)} U ${printPathAscii(f.right, n)})`;
+    }
   }
 }
 
@@ -174,9 +201,9 @@ export function printStateUnicode(f: StateFormula, n: Notation = "atl"): string 
         return `¬(${printStateUnicode(f.sub, n)})`;
       return `¬${printStateUnicode(f.sub, n)}`;
     case "and":
-      return `(${printStateUnicode(f.left, n)} ∧ ${printStateUnicode(f.right, n)})`;
+      return `(${stateOperands(f, "and").map((x) => printStateUnicode(x, n)).join(" ∧ ")})`;
     case "or":
-      return `(${printStateUnicode(f.left, n)} ∨ ${printStateUnicode(f.right, n)})`;
+      return `(${stateOperands(f, "or").map((x) => printStateUnicode(x, n)).join(" ∨ ")})`;
     case "coal": case "cocoal": {
       const q = quantifier(f.kind, f.coalition, n);
       const path = printPathUnicode(f.path, n);
@@ -199,15 +226,18 @@ export function printPathUnicode(f: PathFormula, n: Notation = "atl"): string {
     case "negp":
       return `¬${printPathUnicode(f.sub, n)}`;
     case "andp":
-      return `(${printPathUnicode(f.left, n)} ∧ ${printPathUnicode(f.right, n)})`;
+      return `(${pathOperands(f, "andp").map((x) => printPathUnicode(x, n)).join(" ∧ ")})`;
     case "orp":
-      return `(${printPathUnicode(f.left, n)} ∨ ${printPathUnicode(f.right, n)})`;
+      return `(${pathOperands(f, "orp").map((x) => printPathUnicode(x, n)).join(" ∨ ")})`;
     case "next":
       return `○${printPathUnicodeAtom(f.sub, n)}`;
     case "always":
       return `□${printPathUnicodeAtom(f.sub, n)}`;
-    case "until":
+    case "until": {
+      const ev = asEventually(f);
+      if (ev) return `◇${printPathUnicodeAtom(ev, n)}`;
       return `(${printPathUnicode(f.left, n)} U ${printPathUnicode(f.right, n)})`;
+    }
   }
 }
 
@@ -238,8 +268,8 @@ function stateDepth(f: StateFormula): number {
       if (f.sub.kind === "and" || f.sub.kind === "or" || f.sub.kind === "neg")
         return 1 + stateDepth(f.sub);
       return stateDepth(f.sub);
-    case "and": return 1 + Math.max(stateDepth(f.left), stateDepth(f.right));
-    case "or": return 1 + Math.max(stateDepth(f.left), stateDepth(f.right));
+    case "and": return 1 + Math.max(...stateOperands(f, "and").map(stateDepth));
+    case "or": return 1 + Math.max(...stateOperands(f, "or").map(stateDepth));
     case "coal": case "cocoal": return pathDepth(f.path);
   }
 }
@@ -248,10 +278,14 @@ function pathDepth(f: PathFormula): number {
   switch (f.kind) {
     case "state": return stateDepth(f.sub);
     case "negp": return pathDepth(f.sub);
-    case "andp": return 1 + Math.max(pathDepth(f.left), pathDepth(f.right));
-    case "orp": return 1 + Math.max(pathDepth(f.left), pathDepth(f.right));
+    case "andp": return 1 + Math.max(...pathOperands(f, "andp").map(pathDepth));
+    case "orp": return 1 + Math.max(...pathOperands(f, "orp").map(pathDepth));
     case "next": case "always": return pathDepth(f.sub);
-    case "until": return 1 + Math.max(pathDepth(f.left), pathDepth(f.right));
+    case "until": {
+      const ev = asEventually(f);
+      if (ev) return pathDepth(ev);
+      return 1 + Math.max(pathDepth(f.left), pathDepth(f.right));
+    }
   }
 }
 
@@ -272,6 +306,11 @@ export function printStateLatex(f: StateFormula, n: Notation = "atl"): string {
   return stateLatexInner(f, d, 0, n);
 }
 
+export function printPathLatex(f: PathFormula, n: Notation = "atl"): string {
+  const d = pathDepth(f);
+  return pathLatexInner(f, d, 0, n);
+}
+
 function stateLatexInner(f: StateFormula, maxD: number, curD: number, n: Notation): string {
   switch (f.kind) {
     case "top": return "\\top";
@@ -286,11 +325,11 @@ function stateLatexInner(f: StateFormula, maxD: number, curD: number, n: Notatio
     }
     case "and": {
       const dd = maxD - curD - 1;
-      return `${lp(dd)}${stateLatexInner(f.left, maxD, curD + 1, n)} \\wedge ${stateLatexInner(f.right, maxD, curD + 1, n)}${rp(dd)}`;
+      return `${lp(dd)}${stateOperands(f, "and").map((x) => stateLatexInner(x, maxD, curD + 1, n)).join(" \\wedge ")}${rp(dd)}`;
     }
     case "or": {
       const dd = maxD - curD - 1;
-      return `${lp(dd)}${stateLatexInner(f.left, maxD, curD + 1, n)} \\vee ${stateLatexInner(f.right, maxD, curD + 1, n)}${rp(dd)}`;
+      return `${lp(dd)}${stateOperands(f, "or").map((x) => stateLatexInner(x, maxD, curD + 1, n)).join(" \\vee ")}${rp(dd)}`;
     }
     case "coal": case "cocoal": {
       const q = quantifier(f.kind, f.coalition, n);
@@ -311,17 +350,19 @@ function pathLatexInner(f: PathFormula, maxD: number, curD: number, n: Notation)
       return `\\neg ${pathLatexInner(f.sub, maxD, curD, n)}`;
     case "andp": {
       const dd = maxD - curD - 1;
-      return `${lp(dd)}${pathLatexInner(f.left, maxD, curD + 1, n)} \\wedge ${pathLatexInner(f.right, maxD, curD + 1, n)}${rp(dd)}`;
+      return `${lp(dd)}${pathOperands(f, "andp").map((x) => pathLatexInner(x, maxD, curD + 1, n)).join(" \\wedge ")}${rp(dd)}`;
     }
     case "orp": {
       const dd = maxD - curD - 1;
-      return `${lp(dd)}${pathLatexInner(f.left, maxD, curD + 1, n)} \\vee ${pathLatexInner(f.right, maxD, curD + 1, n)}${rp(dd)}`;
+      return `${lp(dd)}${pathOperands(f, "orp").map((x) => pathLatexInner(x, maxD, curD + 1, n)).join(" \\vee ")}${rp(dd)}`;
     }
     case "next":
       return `\\bigcirc ${pathLatexAtom(f.sub, maxD, curD, n)}`;
     case "always":
       return `\\square ${pathLatexAtom(f.sub, maxD, curD, n)}`;
     case "until": {
+      const ev = asEventually(f);
+      if (ev) return `\\Diamond ${pathLatexAtom(ev, maxD, curD, n)}`;
       const dd = maxD - curD - 1;
       return `${lp(dd)}${pathLatexInner(f.left, maxD, curD + 1, n)} \\,\\mathsf{U}\\, ${pathLatexInner(f.right, maxD, curD + 1, n)}${rp(dd)}`;
     }
@@ -337,11 +378,11 @@ function pathLatexAtom(f: PathFormula, maxD: number, curD: number, n: Notation):
 // ============================================================
 
 export function printStateSetAscii(fs: StateFormulaSet, n: Notation = "atl"): string {
-  return `{${fs.toArray().map((f) => printStateAscii(f, n)).join(", ")}}`;
+  return `{${displayFormulas(fs).map((f) => printStateAscii(f, n)).join(", ")}}`;
 }
 
 export function printStateSetLatex(fs: StateFormulaSet, n: Notation = "atl"): string {
-  return `\\{${fs.toArray().map((f) => printStateLatex(f, n)).join(",\\; ")}\\}`;
+  return `\\{${displayFormulas(fs).map((f) => printStateLatex(f, n)).join(",\\; ")}\\}`;
 }
 
 // ============================================================

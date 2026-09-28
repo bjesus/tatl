@@ -66,7 +66,7 @@ describe("LTL translation", () => {
   });
 
   test("F is sugar for true U", () => {
-    expect(translate("F p", "ltl")).toBe("<<a>>(_top U p)");
+    expect(translate("F p", "ltl")).toBe("<<a>>F p");
   });
 
   test("a bare atom is a path formula", () => {
@@ -78,8 +78,8 @@ describe("LTL translation", () => {
   });
 
   test("temporal operators nest freely", () => {
-    expect(translate("G F p", "ltl")).toBe("<<a>>G (_top U p)");
-    expect(translate("F G p", "ltl")).toBe("<<a>>(_top U G p)");
+    expect(translate("G F p", "ltl")).toBe("<<a>>G F p");
+    expect(translate("F G p", "ltl")).toBe("<<a>>F G p");
   });
 
   test("operator letters need no separating space", () => {
@@ -97,8 +97,8 @@ describe("CTL translation", () => {
   });
 
   test("AF and EF desugar through F", () => {
-    expect(translate("AF p", "ctl")).toBe("<<>>(_top U p)");
-    expect(translate("EF p", "ctl")).toBe("<<a>>(_top U p)");
+    expect(translate("AF p", "ctl")).toBe("<<>>F p");
+    expect(translate("EF p", "ctl")).toBe("<<a>>F p");
   });
 
   test("until accepts square and round brackets alike", () => {
@@ -108,13 +108,13 @@ describe("CTL translation", () => {
   });
 
   test("quantifiers nest", () => {
-    expect(translate("AG EF p", "ctl")).toBe("<<>>G <<a>>(_top U p)");
-    expect(translate("EG AF p", "ctl")).toBe("<<a>>G <<>>(_top U p)");
+    expect(translate("AG EF p", "ctl")).toBe("<<>>G <<a>>F p");
+    expect(translate("EG AF p", "ctl")).toBe("<<a>>G <<>>F p");
   });
 
   test("a temporal operator binds only its immediate argument", () => {
     // AF p & AG q is (AF p) & (AG q), not AF (p & AG q)
-    expect(translate("(AF p & AG q)", "ctl")).toBe("(<<>>(_top U p) & <<>>G q)");
+    expect(translate("(AF p & AG q)", "ctl")).toBe("(<<>>F p & <<>>G q)");
   });
 
   test("operator letters need no separating space", () => {
@@ -152,17 +152,20 @@ describe("LTL satisfiability", () => {
   });
 
   test("disjunctions do not suffer from combinatorial state explosion", () => {
-    // Top-level disjunction GF p | GF ~p
-    const res1 = runTableau(parseFormula("GF p | GF ~p", "ltl"), systemAgents("ltl"));
-    expect(res1.satisfiable).toBe(true);
-    expect(res1.initialTableau.states.size).toBe(8);
-    expect(res1.initialTableau.edges.length).toBe(16);
+    // GF p | GF ~p is a tautology and is recognised as one
+    const res0 = runTableau(parseFormula("GF p | GF ~p", "ltl"), systemAgents("ltl"));
+    expect(res0.satisfiable).toBe(true);
+    expect(res0.initialTableau.states.size).toBe(1);
 
-    // Nested disjunction F(GF p | GF ~p)
-    const res2 = runTableau(parseFormula("F(GF p | GF ~p)", "ltl"), systemAgents("ltl"));
+    // Top-level disjunction GF p | FG q
+    const res1 = runTableau(parseFormula("GF p | FG q", "ltl"), systemAgents("ltl"));
+    expect(res1.satisfiable).toBe(true);
+    expect(res1.initialTableau.states.size).toBeLessThanOrEqual(6);
+
+    // Nested disjunction F(GF p | FG q)
+    const res2 = runTableau(parseFormula("F(GF p | FG q)", "ltl"), systemAgents("ltl"));
     expect(res2.satisfiable).toBe(true);
-    expect(res2.initialTableau.states.size).toBe(13);
-    expect(res2.initialTableau.edges.length).toBe(29);
+    expect(res2.initialTableau.states.size).toBeLessThanOrEqual(12);
   });
 
   test("propositional contradictions are unsatisfiable", () => {
@@ -255,8 +258,8 @@ describe("CTL* translation", () => {
   });
 
   test("a quantifier takes an arbitrary path formula", () => {
-    expect(translate("E(G p & F q)", "ctlstar")).toBe("<<a>>(G p & (_top U q))");
-    expect(translate("A(F G p)", "ctlstar")).toBe("<<>>(_top U G p)");
+    expect(translate("E(G p & F q)", "ctlstar")).toBe("<<a>>(G p & F q)");
+    expect(translate("A(F G p)", "ctlstar")).toBe("<<>>F G p");
     expect(translate("E(p U (q U r))", "ctlstar")).toBe("<<a>>(p U (q U r))");
   });
 
@@ -266,7 +269,7 @@ describe("CTL* translation", () => {
   });
 
   test("quantifiers nest inside path formulas", () => {
-    expect(translate("AG EF p", "ctlstar")).toBe("<<>>G <<a>>(_top U p)");
+    expect(translate("AG EF p", "ctlstar")).toBe("<<>>G <<a>>F p");
   });
 
   test("a state formula is a valid path formula", () => {

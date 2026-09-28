@@ -63,7 +63,7 @@ bun install
 bun test
 ```
 
-203 tests across 3 test files, cross-validated against the TATL OCaml implementation.
+319 tests across 7 test files, cross-validated against the TATL OCaml implementation.
 
 ## Web interface
 
@@ -103,7 +103,8 @@ Exit code: `0` if satisfiable, `1` if unsatisfiable.
 
 ```
 --verbose, -v                     Show detailed output for all phases
---dot [pretableau|initial|final]  Output DOT (Graphviz) graph
+--plain                           Run the plain procedure with no optimisation
+--dot [model|pretableau|initial|final]  Output DOT (Graphviz) graph
 --html                            Output standalone HTML visualization
 --interactive, -i                 Interactive REPL mode
 ```
@@ -161,6 +162,63 @@ The solver implements a three-phase tableau decision procedure for ATL\* satisfi
 
 The input formula is **satisfiable** iff the final tableau still contains a state with the input formula.
 
+### Optimisations
+
+The procedure above is the plain one from the papers. On top of it the solver
+applies a set of optimisations that shrink the tableau without changing any
+verdict. Each is an ATL* equivalence or a change of the tableau's *shape*, and
+each sits behind a flag in `src/core/options.ts` so it can be switched off:
+
+| Flag | What it does |
+|---|---|
+| `simplify` | Propositional and temporal simplification of the input: constants, idempotence, complementary pairs (`GF p → GF p` becomes ⊤), absorption (`G p & F p` becomes `G p`), exact canonicalisation of small propositional subformulas (`(p & q) \| (p & ~q)` becomes `p`), temporal distribution (`GF p \| GF q` becomes `GF (p \| q)`, so `GF p \| GF ~p` becomes ⊤; likewise `FG`, `X`, `G` and Untils sharing a side), `⟨⟨A⟩⟩φ → φ` for state formulas, co-coalition normalisation |
+| `liftDisjunctions` | `⟨⟨Σ⟩⟩(π₁ ∨ π₂) → ⟨⟨Σ⟩⟩π₁ ∨ ⟨⟨Σ⟩⟩π₂` for the grand coalition Σ (E distributes over ∨), in LTL, CTL* and ATL* alike |
+| `acKeys` | ∧ and ∨ are associative and commutative when comparing formulas, so re-associated conjunctions name the same prestate |
+| `semanticBranching` | Branching on `φ ∨ ψ` with φ propositional adds `¬φ` to the ψ branch, so the branches describe disjoint worlds |
+| `semanticBranchingTemporal` | The same for a non-propositional φ whose negation introduces no eventuality, such as `F ℓ` (negation `G ¬ℓ`); slightly larger pretableau, smaller final tableau |
+| `clauseSubsumption` | A next-obligation clause that is a superset of another clause is dropped |
+| `alwaysClosure` | Labels are closed under `□(… ∧ ◇π ∧ …) ⇒ ◇π`, so the "just fulfilled" and "pending" states of a □ formula share a label |
+| `earlyInconsistency` | A state whose universal next-time obligations are already contradictory is dropped at creation instead of after its successors are built |
+| `labelAbsorption` | In a next obligation, a conjunct entailed by another conjunct through a □-free entailment is dropped |
+
+Rewrites that absorb one conjunct into another are applied to the *input*
+only, never to labels the construction produces: a label such as
+`⟨⟨a⟩⟩(□◇p ∧ ◇p)` carries `◇p` as an obligation marker that the E3 check
+relies on.
+
+The hedging term of the OrP decomposition (⊕) is skipped when the coalition
+is the grand coalition, which has nobody to hedge against.
+
+### Models and proofs
+
+The final tableau is not a model: it is the union of every consistent
+bookkeeping state. For a satisfiable formula the solver reads a small
+**model** off the final tableau, following the realization witnesses of the
+E3 check so that every eventuality is fulfilled, and minimises it by
+bisimulation. States are labelled by the literals true there and edges by
+move vectors. `G F p` gives a single state with `p` and a self-loop.
+
+For an unsatisfiable formula the solver prints a **proof**: why each initial
+state was eliminated, following E2 and E3 dependencies down to the states or
+cycles that fail.
+
+### Differential testing
+
+```bash
+bun run difftest.ts --count 2000 --seed 7 --max-depth 5
+```
+
+generates random LTL, CTL, CTL* and ATL* formulas and checks that every
+optimisation, alone and all together, gives the same verdict as the plain
+procedure, and that verdicts are invariant under renaming atoms and agents.
+A small corpus runs as part of `bun test`. Each verdict runs under a node and
+time budget, so the plain procedure's blow-ups are skipped rather than
+waited for; to also cap memory on Linux, wrap the run in a cgroup:
+
+```bash
+systemd-run --user --scope -p MemoryMax=2G bun run difftest.ts --count 2000
+```
+
 ## Key ATL\* properties
 
 - `<<a>>(G p & F q)` is **satisfiable** — a single strategy can enforce always-p and eventually-q.
@@ -199,8 +257,13 @@ src/
     formula.ts          Agents, inconsistency, eventualities, next-time detection
     expansion.ts        Saturation (Rule SR), TupleSet, SetOfTupleSets
     tableau.ts          Three-phase procedure: construction, prestate elim, state elim (E2+E3)
+    options.ts          Optimisation flags (plain procedure vs optimised)
+    simplify.ts         Input preprocessing: simplification, lifting, □-closure
+    model.ts            Model extraction from an open final tableau
+    difftest.ts         Random formulas and the differential checks
   viz/
-    text.ts             Text summary + DOT (Graphviz) output
+    text.ts             Text summary, model, proof + DOT (Graphviz) output
+    proof.ts            HTML rendering of the proof and the model
     html.ts             Standalone HTML page generator
   browser/
     index.ts            Browser entry point (Web Worker)
@@ -209,7 +272,9 @@ tests/
   foundation.test.ts    Unit tests (parser, types, NNF, classification, decomposition, expansion)
   formula.test.ts       Unit tests (parser, classifier, formula utilities)
   examples.test.ts      Integration tests (78 formulas cross-validated against TATL)
+  optimisations.test.ts Optimisations, models, proofs and a differential corpus
 crossval.ts             Systematic cross-validation against TATL (5000 formulas)
+difftest.ts             Differential testing of the optimisations against the plain procedure
 fuzz.ts                 Fuzz testing with random formula generation
 serve.ts                Dev server (serves dist/index.html on port 3000)
 dist/

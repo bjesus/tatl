@@ -75,8 +75,8 @@ describe("CTL output notation", () => {
     expect(show("A(p U q)", "ctl")).toBe("A(p U q)");
   });
 
-  test("F is printed as the (_top U _) it is encoded as", () => {
-    expect(show("EF p", "ctl")).toBe("E(_top U p)");
+  test("F prints as F again although it is encoded as (_top U _)", () => {
+    expect(show("EF p", "ctl")).toBe("EF p");
   });
 
   test("[[a]] prints as A and [[]] as E, giving back the textbook dualities", () => {
@@ -84,25 +84,25 @@ describe("CTL output notation", () => {
     // is exactly the CTL equivalence it should be.
     expect(showNNF("~EF p", "ctl")).toBe("AG ~p");
     expect(showNNF("~AF p", "ctl")).toBe("EG ~p");
-    expect(showNNF("~EG p", "ctl")).toBe("A(_top U ~p)"); // AF ~p
-    expect(showNNF("~AG p", "ctl")).toBe("E(_top U ~p)"); // EF ~p
+    expect(showNNF("~EG p", "ctl")).toBe("AF ~p"); // AF ~p
+    expect(showNNF("~AG p", "ctl")).toBe("EF ~p"); // EF ~p
   });
 
   test("nested quantifiers each get their own letter", () => {
-    expect(show("AG EF p", "ctl")).toBe("AG E(_top U p)");
-    expect(show("AG (p -> EF q)", "ctl")).toBe("AG (~p | E(_top U q))");
+    expect(show("AG EF p", "ctl")).toBe("AG EF p");
+    expect(show("AG (p -> EF q)", "ctl")).toBe("AG (~p | EF q)");
   });
 
   test("CTL* path formulas print under a single quantifier", () => {
-    expect(show("E(G F p)", "ctlstar")).toBe("EG (_top U p)");
-    expect(show("A(F p | G q)", "ctlstar")).toBe("A((_top U p) | G q)");
+    expect(show("E(G F p)", "ctlstar")).toBe("EG F p");
+    expect(show("A(F p | G q)", "ctlstar")).toBe("A(F p | G q)");
   });
 
   test("no ATL* bracket survives anywhere in a solved CTL tableau", () => {
     const out = solvedOutput("AG (p -> EF q)", "ctl");
     expect(out).not.toContain("<<");
     expect(out).not.toContain("[[");
-    expect(out).toContain("AG (~p | E(_top U q))");
+    expect(out).toContain("AG (~p | EF q)");
   });
 
   test("no ATL* bracket survives anywhere in a solved CTL* tableau", () => {
@@ -115,9 +115,9 @@ describe("CTL output notation", () => {
     // A and E are what you type; ∀ and ∃ are the same quantifiers typeset,
     // which is how the app's own syntax reference presents them.
     const f = parseFormulaRaw("AG EF p", "ctl");
-    expect(printStateUnicode(f, "ctl")).toBe("∀□∃(⊤ U p)");
+    expect(printStateUnicode(f, "ctl")).toBe("∀□∃◇p");
     expect(printStateLatex(f, "ctl")).toBe(
-      "\\forall\\square \\exists(\\top \\,\\mathsf{U}\\, p)",
+      "\\forall\\square \\exists\\Diamond p",
     );
   });
 
@@ -140,8 +140,8 @@ describe("LTL output notation", () => {
   });
 
   test("wrappers introduced inside the encoding are dropped too", () => {
-    expect(show("G F p", "ltl")).toBe("G (_top U p)");
-    expect(show("F G p", "ltl")).toBe("(_top U G p)");
+    expect(show("G F p", "ltl")).toBe("G F p");
+    expect(show("F G p", "ltl")).toBe("F G p");
   });
 
   test("dropping a wrapper never loses a needed parenthesis", () => {
@@ -154,7 +154,7 @@ describe("LTL output notation", () => {
     const out = solvedOutput("G F p", "ltl");
     expect(out).not.toContain("<<");
     expect(out).not.toContain("[[");
-    expect(out).toContain("X G (_top U p)");
+    expect(out).toContain("X (G F p & F p)");
   });
 
   test("negated LTL stays a bare path formula", () => {
@@ -164,7 +164,7 @@ describe("LTL output notation", () => {
   });
 
   test("Unicode drops the wrapper as well, leaving no quantifier symbol", () => {
-    expect(printStateUnicode(parseFormulaRaw("G F p", "ltl"), "ltl")).toBe("□(⊤ U p)");
+    expect(printStateUnicode(parseFormulaRaw("G F p", "ltl"), "ltl")).toBe("□◇p");
   });
 
   test("LaTeX drops the wrapper without leaving a stray macro", () => {

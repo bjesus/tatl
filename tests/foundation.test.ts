@@ -584,7 +584,7 @@ describe("Gamma-decomposition: gammaComp", () => {
   test("Coal(A, Always(State p)) → produces formula tuples", () => {
     clearDecompositionCache();
     const f = Coal(["a"], PAlways(PState(Atom("p"))));
-    const result = gammaComp(f);
+    const result = gammaComp(f, ["a"]);
     expect(result.size).toBeGreaterThanOrEqual(1);
     // Each tuple should have a frm and nextFrm
     for (const t of result) {
@@ -597,14 +597,14 @@ describe("Gamma-decomposition: gammaComp", () => {
   test("Coal(A, Until(State p, State q)) → produces multiple tuples", () => {
     clearDecompositionCache();
     const f = Coal(["a"], PUntil(PState(Atom("p")), PState(Atom("q"))));
-    const result = gammaComp(f);
+    const result = gammaComp(f, ["a"]);
     expect(result.size).toBeGreaterThanOrEqual(1);
   });
 
   test("CoCoal(A, Always(State p)) → produces formula tuples with cocoal wrapping", () => {
     clearDecompositionCache();
     const f = CoCoal(["a"], PAlways(PState(Atom("p"))));
-    const result = gammaComp(f);
+    const result = gammaComp(f, ["a"]);
     expect(result.size).toBeGreaterThanOrEqual(1);
   });
 
@@ -612,7 +612,7 @@ describe("Gamma-decomposition: gammaComp", () => {
     clearDecompositionCache();
     // <<a>>(Gp & Fq)
     const f = Coal(["a"], PAnd(PAlways(PState(Atom("p"))), PUntil(PState(STop), PState(Atom("q")))));
-    const result = gammaComp(f);
+    const result = gammaComp(f, ["a"]);
     expect(result.size).toBeGreaterThanOrEqual(1);
   });
 });
@@ -627,14 +627,14 @@ describe("Saturation (Rule SR)", () => {
   test("single atom → one state with that atom", () => {
     clearDecompositionCache();
     const fs = new StateFormulaSet([Atom("p")]);
-    const result = ruleSR(fs);
+    const result = ruleSR(fs, []);
     expect(result.size).toBe(1);
   });
 
   test("And(p, q) → one state with both p and q", () => {
     clearDecompositionCache();
     const fs = new StateFormulaSet([SAnd(Atom("p"), Atom("q"))]);
-    const result = ruleSR(fs);
+    const result = ruleSR(fs, []);
     expect(result.size).toBe(1);
     // The state should contain p and q
     const states = result.toArray();
@@ -646,7 +646,7 @@ describe("Saturation (Rule SR)", () => {
   test("Or(p, q) → two states", () => {
     clearDecompositionCache();
     const fs = new StateFormulaSet([SOr(Atom("p"), Atom("q"))]);
-    const result = ruleSR(fs);
+    const result = ruleSR(fs, []);
     expect(result.size).toBe(2);
   });
 
@@ -656,21 +656,21 @@ describe("Saturation (Rule SR)", () => {
     // The inconsistency is caught later during state creation (getOrCreateState).
     clearDecompositionCache();
     const fs = new StateFormulaSet([SAnd(Atom("p"), Neg(Atom("p")))]);
-    const result = ruleSR(fs);
+    const result = ruleSR(fs, []);
     expect(result.size).toBe(1);
   });
 
   test("Coal(A, Next(State p)) — next-time primitive → one state", () => {
     clearDecompositionCache();
     const fs = new StateFormulaSet([Coal(["a"], PNext(PState(Atom("p"))))]);
-    const result = ruleSR(fs);
+    const result = ruleSR(fs, []);
     expect(result.size).toBe(1);
   });
 
   test("Coal(A, Always(State p)) — gamma → at least one state", () => {
     clearDecompositionCache();
     const fs = new StateFormulaSet([Coal(["a"], PAlways(PState(Atom("p"))))]);
-    const result = ruleSR(fs);
+    const result = ruleSR(fs, []);
     expect(result.size).toBeGreaterThanOrEqual(1);
   });
 });

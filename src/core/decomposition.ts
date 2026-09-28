@@ -42,7 +42,15 @@ import {
   pathKey,
   formulaTupleKey,
 } from "./types.ts";
-import { printPathAscii, printStateAscii } from "./printer.ts";
+import { getOptions } from "./options.ts";
+
+/** Thrown when construction exceeds the configured node or time budget. */
+export class BudgetExceeded extends Error {
+  constructor() { super("tableau construction exceeded its budget"); this.name = "BudgetExceeded"; }
+}
+import { nnfState, nnfPath } from "./nnf.ts";
+import { isPropositional, containsEventualityOperator } from "./formula.ts";
+import { type Coalition, coalitionEqual, Neg, PNeg, PAnd as PAndCtor } from "./types.ts";
 
 // ============================================================
 // Internal types for gamma-decomposition
@@ -318,23 +326,23 @@ function simplification1(t: GammaTuple): SetOfPathFormulaSets {
  * any multi-element set containing φ is subsumed and can be removed.
  */
 function simplification2(setEns: SetOfPathFormulaSets): SetOfPathFormulaSets {
-  // Partition into singletons and multi-element sets
-  const singletons: PathFormulaSet[] = [];
-  const multis: PathFormulaSet[] = [];
-  for (const s of setEns) {
-    if (s.size <= 1) singletons.push(s);
-    else multis.push(s);
-  }
+  const clauses = setEns.toArray();
+  if (clauses.length <= 1) return setEns;
+  const general = getOptions().clauseSubsumption;
 
-  // Check each multi-element set: if any of its elements appears as a singleton, remove it
+  const keysOf = (c: PathFormulaSet) => new Set(c.toArray().map(pathKey));
+  const keyed = clauses.map(c => ({ c, keys: keysOf(c), key: c.key() }));
+
   const toRemove = new Set<string>();
-  for (const multi of multis) {
-    for (const frm of multi) {
-      const singleton = new PathFormulaSet([frm]);
-      if (singletons.some(s => s.key() === singleton.key())) {
-        toRemove.add(multi.key());
-        break;
-      }
+  for (const d of keyed) {
+    for (const c of keyed) {
+      if (c === d || toRemove.has(c.key)) continue;
+      // The plain procedure only removes a clause containing a singleton's formula
+      if (!general && c.keys.size !== 1) continue;
+      if (c.keys.size >= d.keys.size) continue;
+      let subset = true;
+      for (const k of c.keys) if (!d.keys.has(k)) { subset = false; break; }
+      if (subset) { toRemove.add(d.key); break; }
     }
   }
 
@@ -345,6 +353,107 @@ function simplification2(setEns: SetOfPathFormulaSets): SetOfPathFormulaSets {
     if (!toRemove.has(s.key())) result.add(s);
   }
   return result;
+}
+
+/**
+ * Closure under □π ⇒ π, for every Until conjunct of π: for every singleton
+ * clause {□(… ∧ (ρ U σ) ∧ …)} add the clause {ρ U σ}.
+ *
+ * The label "□π" and the label "□π ∧ π" name the same obligation (the
+ * second only makes the first step of the □ explicit), but the procedure
+ * produces both: the former when π was fulfilled in the current state and
+ * the latter when parts of π are still pending. Closing every label under
+ * this rule makes the two coincide, so a □ formula no longer doubles the
+ * tableau. Adding an implied conjunct never loses an eventuality marker;
+ * only removing one could.
+ */
+function alwaysClosure(setEns: SetOfPathFormulaSets): SetOfPathFormulaSets {
+  let result = setEns;
+  let added = true;
+  while (added) {
+    added = false;
+    for (const clause of result.toArray()) {
+      if (clause.size !== 1) continue;
+      const f = clause.toArray()[0]!;
+      if (f.kind !== "always") continue;
+      for (const conj of pathOperandsOf(f.sub)) {
+        if (conj.kind !== "until") continue;
+        const single = new PathFormulaSet([conj]);
+        if (!result.has(single)) {
+          if (result === setEns) result = setEns.clone();
+          result.add(single);
+          added = true;
+        }
+      }
+    }
+  }
+  return result;
+}
+
+/**
+ * Drop a singleton clause {ψ} when another singleton clause {φ} entails ψ by a
+ * □-free entailment (see trackedEntails). The E3 check follows the residual of
+ * a label's path formula, and under a □-free entailment "φ realized" implies
+ * "ψ realized" clause by clause, so nothing E3 tracks is lost. Entailments
+ * through □ are excluded: E3 treats □ as structurally realized and relies on
+ * the explicit ◇ marker next to it.
+ */
+function labelAbsorption(setEns: SetOfPathFormulaSets): SetOfPathFormulaSets {
+  const singles = setEns.toArray().filter(c => c.size === 1).map(c => c.toArray()[0]!);
+  if (singles.length < 2) return setEns;
+  const drop = new Set<string>();
+  for (const psi of singles) {
+    const k = pathKey(psi);
+    if (drop.has(k)) continue;
+    for (const phi of singles) {
+      if (phi === psi || drop.has(pathKey(phi))) continue;
+      if (trackedEntails(phi, psi) && !(trackedEntails(psi, phi))) { drop.add(k); break; }
+    }
+  }
+  if (drop.size === 0) return setEns;
+  const result = new SetOfPathFormulaSets();
+  for (const c of setEns) {
+    if (c.size === 1 && drop.has(pathKey(c.toArray()[0]!))) continue;
+    result.add(c);
+  }
+  return result.isEmpty() ? singlPath(PState(STop)) : result;
+}
+
+/**
+ * φ ⊨ ψ, restricted so that the E3 residual of ψ is realized whenever that
+ * of φ is: identical formulas, ⊤, membership in a disjunction, a conjunct,
+ * Untils with the same goal and entailed guard, and ○ with entailed body.
+ * No rule looks through □.
+ */
+function trackedEntails(a: PathFormula, b: PathFormula): boolean {
+  if (pathKey(a) === pathKey(b)) return true;
+  if (b.kind === "state" && b.sub.kind === "top") return true;
+  if (a.kind === "state" && b.kind === "state") return statePropEntails(a.sub, b.sub);
+  if (a.kind === "andp" && pathOperandsOf(a).some(x => trackedEntails(x, b))) return true;
+  if (b.kind === "orp" && [b.left, b.right].some(y => trackedEntails(a, y))) return true;
+  if (b.kind === "andp" && [b.left, b.right].every(y => trackedEntails(a, y))) return true;
+  if (a.kind === "orp" && [a.left, a.right].every(x => trackedEntails(x, b))) return true;
+  if (a.kind === "until" && b.kind === "until" && pathKey(a.right) === pathKey(b.right)) {
+    return trackedEntails(a.left, b.left);
+  }
+  if (a.kind === "next" && b.kind === "next") return trackedEntails(a.sub, b.sub);
+  return false;
+}
+
+/** Propositional entailment on state formulas by structure only. */
+function statePropEntails(a: StateFormula, b: StateFormula): boolean {
+  if (stateKey(a) === stateKey(b)) return true;
+  if (b.kind === "top" || a.kind === "bot") return true;
+  if (a.kind === "and" && [a.left, a.right].some(x => statePropEntails(x, b))) return true;
+  if (b.kind === "or" && [b.left, b.right].some(y => statePropEntails(a, y))) return true;
+  if (b.kind === "and" && [b.left, b.right].every(y => statePropEntails(a, y))) return true;
+  if (a.kind === "or" && [a.left, a.right].every(x => statePropEntails(x, b))) return true;
+  return false;
+}
+
+function pathOperandsOf(f: PathFormula): PathFormula[] {
+  if (f.kind !== "andp") return [f];
+  return [...pathOperandsOf(f.left), ...pathOperandsOf(f.right)];
 }
 
 /**
@@ -360,7 +469,11 @@ function simplifyTuple(t: GammaTuple): GammaTuple {
 
   if (newF3.isEmpty()) newF3 = singlPath(PState(STop));
 
+  if (getOptions().alwaysClosure) newF3 = alwaysClosure(newF3);
+
   newF3 = simplification2(newF3);
+
+  if (getOptions().labelAbsorption) newF3 = labelAbsorption(newF3);
 
   if (newF3.isEmpty()) newF3 = singlPath(PState(STop));
 
@@ -479,8 +592,12 @@ export function oplus(set1: GammaSetCollection, set2: GammaSetCollection): Gamma
  * Reference: TATL decomposition.ml gamma_sets
  */
 export function gammaSets(path: PathFormula, noOpponents: boolean = false): GammaSetCollection {
+  if (Date.now() > getOptions().deadline) throw new BudgetExceeded();
   // Check memoization cache
-  const cacheKey = (noOpponents ? "no_opp:" : "opp:") + pathKey(path);
+  const o = getOptions();
+  const cacheKey = (noOpponents ? "no_opp:" : "opp:") +
+    (o.semanticBranching ? "sb:" : "") + (o.semanticBranchingTemporal ? "sbt:" : "") + (o.clauseSubsumption ? "cs:" : "") + (o.alwaysClosure ? "ac:" : "") +
+    (o.labelAbsorption ? "la:" : "") + pathKey(path);
   const cached = decompositionCache.get(cacheKey);
   if (cached) return cached;
 
@@ -608,8 +725,29 @@ export function gammaSets(path: PathFormula, noOpponents: boolean = false): Gamm
 
     case "orp": {
       // OrP(p1, p2) → γ(p1) ∪ γ(p2) (∪ oplus(γ(p1), γ(p2)) if opponents exist)
-      const g1 = gammaSets(path.left, noOpponents);
-      const g2 = gammaSets(path.right, noOpponents);
+      //
+      // Semantic branching: π₁ ∨ π₂ ≡ π₁ ∨ (¬π₁ ∧ π₂). When π₁ is a
+      // propositional state formula, ¬π₁ is cheap and the two branches then
+      // describe disjoint sets of worlds. (Symmetrically for π₂.)
+      let left = path.left;
+      let right = path.right;
+      const o = getOptions();
+      if (o.semanticBranching) {
+        // ¬π must add no eventuality: π propositional, or (when enabled)
+        // e.g. π = ◇ℓ whose negation □¬ℓ is eventuality-free.
+        const nl = nnfPath(PNeg(left));
+        const nr = nnfPath(PNeg(right));
+        const ok = (orig: PathFormula, neg: PathFormula) =>
+          (orig.kind === "state" && isPropositional(orig.sub)) ||
+          (o.semanticBranchingTemporal && !containsEventualityOperator(neg) && !containsNextPath(neg));
+        if (ok(left, nl)) {
+          right = PAndCtor(nl, right);
+        } else if (ok(right, nr)) {
+          left = PAndCtor(nr, left);
+        }
+      }
+      const g1 = gammaSets(left, noOpponents);
+      const g2 = gammaSets(right, noOpponents);
       const union = g1.union(g2);
       result = noOpponents ? union : union.union(oplus(g1, g2));
       break;
@@ -673,7 +811,7 @@ export class FormulaTupleSet {
  *
  * Reference: TATL decomposition.ml gamma_comp
  */
-export function gammaComp(formula: StateFormula): FormulaTupleSet {
+export function gammaComp(formula: StateFormula, allAgents: Coalition): FormulaTupleSet {
   if (formula.kind !== "coal" && formula.kind !== "cocoal") {
     throw new Error("gammaComp: expected Coal or CoCoal formula");
   }
@@ -685,10 +823,11 @@ export function gammaComp(formula: StateFormula): FormulaTupleSet {
   const pathFrm = formula.path;
   const isCoal = formula.kind === "coal";
 
-  // In single-agent contexts (like LTL / CTL* where coalition is {"a"}) or whenever
-  // the coalition has no opponents, the coalition completely controls the path transitions.
-  // There are no adversaries to hedge against, so OrP decomposition can safely skip oplus.
-  const noOpponents = isCoal && la.length === 1 && la[0] === "a";
+  // When the coalition is the grand coalition (every agent in the model) it
+  // completely controls the play: there is nobody to hedge against, so the
+  // OrP decomposition can skip oplus. ⟨⟨Σ⟩⟩(π₁ ∨ π₂) ≡ ⟨⟨Σ⟩⟩π₁ ∨ ⟨⟨Σ⟩⟩π₂,
+  // and every ⊕-tuple is subsumed by a plain tuple on a single path.
+  const noOpponents = isCoal && coalitionEqual(la, allAgents);
 
   const setTuples = gammaSets(pathFrm, noOpponents);
   const result = new FormulaTupleSet();

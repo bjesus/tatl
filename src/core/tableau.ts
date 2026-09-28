@@ -54,20 +54,37 @@ import {
   nextTimeInner,
   agentsInStateSet,
 } from "./formula.ts";
-import { clearDecompositionCache } from "./decomposition.ts";
+import { clearDecompositionCache, BudgetExceeded } from "./decomposition.ts";
+import { preprocess } from "./simplify.ts";
+import { getOptions } from "./options.ts";
+
+export { BudgetExceeded };
+
+function checkBudget(pretableau: Pretableau): void {
+  const o = getOptions();
+  if (pretableau.states.size + pretableau.prestates.size > o.maxNodes) throw new BudgetExceeded();
+  if (Date.now() > o.deadline) throw new BudgetExceeded();
+}
+
+export function checkDeadline(): void {
+  if (Date.now() > getOptions().deadline) throw new BudgetExceeded();
+}
+import type { Explanation, RealizationFailure } from "./types.ts";
 
 // ============================================================
 // Node ID generation
 // ============================================================
 
-let nodeCounter = 0;
+const nodeCounters: Record<string, number> = {};
 
 function freshNodeId(prefix: string): NodeId {
-  return `${prefix}${nodeCounter++}`;
+  const n = nodeCounters[prefix] ?? 0;
+  nodeCounters[prefix] = n + 1;
+  return `${prefix}${n}`;
 }
 
 function resetNodeCounter(): void {
-  nodeCounter = 0;
+  for (const k of Object.keys(nodeCounters)) delete nodeCounters[k];
 }
 
 // ============================================================
@@ -90,7 +107,7 @@ function resetNodeCounter(): void {
  * @returns TableauResult with all phases recorded
  */
 export function runTableau(
-  theta: StateFormula,
+  original: StateFormula,
   extraAgents?: readonly Agent[],
   onProgress?: (stage: string) => void
 ): TableauResult {
@@ -99,9 +116,12 @@ export function runTableau(
 
   // Agents mentioned in the formula, plus any the caller declared explicitly
   const allAgents = normalizeCoalition([
-    ...agentsInStateSet(new StateFormulaSet([theta])),
+    ...agentsInStateSet(new StateFormulaSet([original])),
     ...(extraAgents ?? []),
   ]);
+
+  // Phase 0: equivalence-preserving rewrites of the input
+  const theta = preprocess(original, allAgents);
 
   // Phase 1: Construction
   if (onProgress) onProgress("Phase 1: Construction");
@@ -111,31 +131,20 @@ export function runTableau(
   if (onProgress) onProgress("Phase 2: Prestate Elimination");
   const initialTableau = prestateEliminationPhase(pretableau, allAgents);
 
+  // The initial states: those the initial prestate p0 expands to
+  const initialStateIds: NodeId[] = [];
+  for (const edge of pretableau.dashedEdges) {
+    if (edge.from === "p0" && !initialStateIds.includes(edge.to)) initialStateIds.push(edge.to);
+  }
+
   // Phase 3: State elimination
   if (onProgress) onProgress("Phase 3: State Elimination");
-  const { tableau: finalTableau, eliminations } = stateEliminationPhase(initialTableau, allAgents);
+  const { tableau: finalTableau, eliminations, unreachable, realization } =
+    stateEliminationPhase(initialTableau, allAgents, initialStateIds);
 
-  // Check if open: does any surviving state contain theta?
+  // Open iff some initial state survives
   if (onProgress) onProgress("Checking Satisfiability");
-  let satisfiable = false;
-
-  // Find the initial prestate's successor states
-  const initialPrestateId = "p0"; // We create the initial prestate as p0
-  // Get initial states (those reachable from the initial prestate via dashed edges)
-  const initialStateIds = new Set<NodeId>();
-  for (const edge of pretableau.dashedEdges) {
-    if (edge.from === initialPrestateId) {
-      initialStateIds.add(edge.to);
-    }
-  }
-
-  // Check if any initial state survives
-  for (const stateId of initialStateIds) {
-    if (finalTableau.states.has(stateId)) {
-      satisfiable = true;
-      break;
-    }
-  }
+  const satisfiable = initialStateIds.some(id => finalTableau.states.has(id));
 
   return {
     satisfiable,
@@ -143,8 +152,12 @@ export function runTableau(
     initialTableau,
     finalTableau,
     inputFormula: theta,
+    originalFormula: original,
     allAgents,
+    initialStateIds,
     eliminations,
+    unreachable,
+    realization,
   };
 }
 
@@ -219,7 +232,7 @@ function consFromPre(
     const ps = pretableau.prestates.get(psId)!;
 
     // Apply Rule SR to get sets of formula tuples
-    const tupleSets = ruleSR(ps.formulas);
+    const tupleSets = ruleSR(ps.formulas, allAgents);
 
     for (const tupleSet of tupleSets) {
       // Extract detail: formulas and eventualities from tuples
@@ -347,13 +360,25 @@ function getOrCreateState(
 ): { id: NodeId | null; isNew: boolean } {
   const key = formulas.key();
 
-  // Already exists?
+  // Already exists? Two expansions of a prestate can produce the same formula
+  // set while tracking different path formulas (one may already have realized
+  // an eventuality the other still carries). The state stands for either
+  // expansion, so their tracked formulas are merged.
   if (stateIndex.has(key)) {
-    return { id: stateIndex.get(key)!, isNew: false };
+    const id = stateIndex.get(key)!;
+    mergeEventualities(pretableau.states.get(id)!.tuples, eventualities);
+    return { id, isNew: false };
   }
 
   // Inconsistency check
   if (isPatentlyInconsistent(formulas)) {
+    return { id: null, isNew: false };
+  }
+
+  // Universal next-time obligations hold at every successor; if together
+  // they are already patently inconsistent, no successor can exist and the
+  // state would fall to E2. Drop it at once.
+  if (getOptions().earlyInconsistency && universalNextInconsistent(formulas, allAgents)) {
     return { id: null, isNew: false };
   }
 
@@ -395,11 +420,14 @@ function getOrCreateState(
     nbNeg = nbrNeg;
   }
 
+  checkBudget(pretableau);
   const stateId = freshNodeId("s");
+  const pooled: FormulaTuple[] = [];
+  mergeEventualities(pooled, eventualities);
   const state: State = {
     id: stateId,
     formulas: stateFormulas,
-    tuples: eventualities,
+    tuples: pooled,
     kind: "state",
     // Store next-time classification for the Next rule
     _nextPos: stateEnforceable,
@@ -414,6 +442,53 @@ function getOrCreateState(
   stateIndex.set(key, stateId);
 
   return { id: stateId, isNew: true };
+}
+
+/**
+ * One tuple per eventuality formula. A prestate can expand the same
+ * eventuality in several ways that end up in one state (one expansion may
+ * have realized the eventuality where another still carries it); the state
+ * stands for any of them, so their tracked path formulas are pooled. The
+ * continuation kept is the one still pending, if any, so that nothing that
+ * might still be owed is dropped.
+ */
+function universalNextInconsistent(formulas: StateFormulaSet, allAgents: Coalition): boolean {
+  const next = new StateFormulaSet();
+  let any = false;
+  for (const f of formulas) {
+    if (f.kind !== "coal" && f.kind !== "cocoal") continue;
+    if (f.path.kind !== "next" || f.path.sub.kind !== "state") continue;
+    const universal =
+      (f.kind === "coal" && f.coalition.length === 0) ||
+      (f.kind === "cocoal" && coalitionEqual(f.coalition, allAgents));
+    if (!universal) continue;
+    any = true;
+    for (const c of conjunctsOf(f.path.sub.sub)) next.add(c);
+  }
+  return any && isPatentlyInconsistent(next);
+}
+
+function conjunctsOf(f: StateFormula): StateFormula[] {
+  if (f.kind !== "and") return [f];
+  return [...conjunctsOf(f.left), ...conjunctsOf(f.right)];
+}
+
+function mergeEventualities(existing: FormulaTuple[], incoming: FormulaTuple[]): void {
+  for (const t of incoming) {
+    const idx = existing.findIndex((u) => stateKey(u.frm) === stateKey(t.frm));
+    if (idx < 0) {
+      existing.push(t);
+      continue;
+    }
+    const u = existing[idx]!;
+    const pathFrm = t.pathFrm.isSubsetOfSet(u.pathFrm) ? u.pathFrm : u.pathFrm.union(t.pathFrm);
+    const uResolved = u.nextFrm.kind === "coal" || u.nextFrm.kind === "cocoal"
+      ? u.nextFrm.path.kind === "state" && u.nextFrm.path.sub.kind === "top" : true;
+    const nextFrm = uResolved ? t.nextFrm : u.nextFrm;
+    if (pathFrm !== u.pathFrm || nextFrm !== u.nextFrm) {
+      existing[idx] = { frm: u.frm, pathFrm, nextFrm };
+    }
+  }
 }
 
 /**
@@ -446,6 +521,7 @@ function getOrCreatePrestateChecked(
   if (prestateIndex.has(key)) {
     return { id: prestateIndex.get(key)!, isNew: false };
   }
+  checkBudget(pretableau);
   const id = freshNodeId("p");
   const ps: PreState = { id, formulas, tuples: [], kind: "prestate" };
   pretableau.prestates.set(id, ps);
@@ -458,7 +534,7 @@ function getOrCreatePrestateChecked(
 // ============================================================
 
 /** Internal state info stored alongside the State node */
-interface StateNextInfo {
+export interface StateNextInfo {
   _nextPos: Array<[number, StateFormula]>;      // numbered enforceable
   _nextNeg: Array<[number, StateFormula]>;      // numbered proper unavoidable
   _nextAgents: StateFormula[];                   // agents unavoidable
@@ -729,19 +805,22 @@ function prestateEliminationPhase(pretableau: Pretableau, allAgents: Coalition):
  */
 function stateEliminationPhase(
   initialTableau: Tableau,
-  allAgents: Coalition
-): { tableau: Tableau; eliminations: EliminationRecord[] } {
+  allAgents: Coalition,
+  initialStateIds: NodeId[]
+): { tableau: Tableau; eliminations: EliminationRecord[]; unreachable: NodeId[]; realization: RealizationOracle } {
   const states = new Map(initialTableau.states);
+  const allEdges = initialTableau.edges;
   let edges = [...initialTableau.edges];
   const eliminations: EliminationRecord[] = [];
   const suppressed = new Set<NodeId>(); // h_suppr equivalent
+  let oracle: RealizationOracle;
 
   // Dovetailed elimination loop
   let changed = true;
-  while (changed) {
+  do {
     const prevSuppressed = suppressed.size;
 
-    stateElimination(states, edges, allAgents, suppressed, eliminations);
+    oracle = stateElimination(states, edges, allEdges, allAgents, suppressed, eliminations);
 
     const newSuppressed = suppressed.size;
     changed = newSuppressed !== prevSuppressed;
@@ -751,17 +830,36 @@ function stateEliminationPhase(
       // Clean edges of suppressed nodes
       edges = edges.filter(e => !suppressed.has(e.from) && !suppressed.has(e.to));
     }
-  }
+  } while (changed);
 
   // Remove suppressed states
   for (const id of suppressed) {
     states.delete(id);
   }
 
+  // States that only remain reachable through eliminated states play no part
+  // in the verdict or in any model, so they are dropped from the final tableau.
+  const reachable = new Set<NodeId>();
+  const stack = initialStateIds.filter(id => states.has(id));
+  for (const id of stack) reachable.add(id);
+  while (stack.length > 0) {
+    const id = stack.pop()!;
+    for (const e of edges) {
+      if (e.from === id && states.has(e.to) && !reachable.has(e.to)) {
+        reachable.add(e.to);
+        stack.push(e.to);
+      }
+    }
+  }
+  const unreachable: NodeId[] = [];
+  for (const id of [...states.keys()]) {
+    if (!reachable.has(id)) { unreachable.push(id); states.delete(id); }
+  }
+
   // Final edge cleanup
   edges = edges.filter(e => states.has(e.from) && states.has(e.to));
 
-  return { tableau: { states, edges, allAgents }, eliminations };
+  return { tableau: { states, edges, allAgents }, eliminations, unreachable, realization: oracle! };
 }
 
 /**
@@ -772,30 +870,65 @@ function stateEliminationPhase(
 function stateElimination(
   states: Map<NodeId, State>,
   edges: SolidEdge[],
+  allEdges: SolidEdge[],
   allAgents: Coalition,
   suppressed: Set<NodeId>,
   eliminations: EliminationRecord[]
-): void {
+): RealizationOracle {
   // Realization results are shared across all E3 checks of this pass.
-  const oracle = new RealizationOracle(states, edges, allAgents, suppressed);
+  const oracle = new RealizationOracle(states, edges, allAgents, suppressed, allEdges);
 
   for (const [id, state] of states) {
     if (suppressed.has(id)) continue;
+    checkDeadline();
 
     // E2: Check complete successors
-    if (!isCompletSucc(id, state, edges, suppressed, allAgents)) {
-      removeState(id, state, suppressed, eliminations, "E2");
+    const missing = missingMoveVector(id, state, edges, suppressed, allAgents);
+    if (missing) {
+      const via = allEdges.find(e => e.from === id && e.label.join(",") === missing.join(","));
+      const successors = via?.viaPrestate
+        ? allEdges.filter(e => e.from === id && e.viaPrestate === via.viaPrestate).map(e => e.to)
+        : [];
+      const nextFormula = nextFormulaForMove(state, missing, allAgents);
+      removeState(id, state, suppressed, eliminations, "E2", nextFormula, {
+        kind: "E2",
+        moveVector: missing,
+        prestateId: via?.viaPrestate ?? "",
+        successors: [...new Set(successors)],
+      });
       continue;
     }
 
     // E3: Check eventuality realization
     const nonImmReal = getEvNonImmReal(state, suppressed);
-    if (nonImmReal.length > 0) {
-      if (!verifEvNonImmReal(nonImmReal, id, state, oracle)) {
-        removeState(id, state, suppressed, eliminations, "E3");
+    for (const { ev, residual } of nonImmReal) {
+      if (!oracle.isRealizable(ev, id, state, residual)) {
+        removeState(id, state, suppressed, eliminations, "E3", ev.frm, {
+          kind: "E3",
+          eventuality: ev.frm,
+          residual,
+          failure: oracle.explain(realizationKey(id, ev.frm, residual)),
+        });
+        break;
       }
     }
   }
+
+  return oracle;
+}
+
+/**
+ * The next-time formula whose index a move vector plays, for reporting.
+ */
+function nextFormulaForMove(state: State, mv: MoveVector, allAgents: Coalition): StateFormula {
+  const info = state as State & Partial<StateNextInfo>;
+  const nbPos = info._nbPos ?? 0;
+  const first = mv[0] ?? 0;
+  const pos = (info._nextPos ?? []).find(([n]) => n === first);
+  if (pos) return pos[1];
+  const neg = (info._nextNeg ?? []).find(([n]) => n === first - nbPos);
+  if (neg) return neg[1];
+  return state.tuples.length > 0 ? state.tuples[0]!.frm : STop;
 }
 
 /**
@@ -806,15 +939,18 @@ function removeState(
   state: State,
   suppressed: Set<NodeId>,
   eliminations: EliminationRecord[],
-  rule: "E2" | "E3"
+  rule: "E2" | "E3",
+  formula: StateFormula,
+  explanation: Explanation
 ): void {
   if (suppressed.has(id)) return;
   suppressed.add(id);
   eliminations.push({
     stateId: id,
     rule,
-    formula: state.tuples.length > 0 ? state.tuples[0]!.frm : STop,
+    formula,
     stateFormulas: state.formulas,
+    explanation,
   });
 }
 
@@ -831,17 +967,17 @@ function removeState(
  * Reference: TATL elimination_star.ml — is_complet_succ
  *   Movecs.equal ens_succ_mv (Graph_tableau.V.label v).assoc_movecs
  */
-function isCompletSucc(
+function missingMoveVector(
   stateId: NodeId,
   state: State,
   edges: SolidEdge[],
   suppressed: Set<NodeId>,
   allAgents: Coalition
-): boolean {
+): MoveVector | null {
   const info = state as State & Partial<StateNextInfo>;
   const moveVecCount = info._moveVecCount;
 
-  if (moveVecCount === undefined) return true; // No next-time info
+  if (moveVecCount === undefined) return null; // No next-time info
 
   // Collect all surviving move vectors (those with at least one non-suppressed successor)
   const survivingMoveVecs = new Set<string>();
@@ -864,11 +1000,11 @@ function isCompletSucc(
       remaining = Math.floor(remaining / moveVecCount);
     }
     if (!survivingMoveVecs.has(mv.join(","))) {
-      return false;
+      return mv;
     }
   }
 
-  return true;
+  return null;
 }
 
 // ============================================================
@@ -906,7 +1042,7 @@ function simplOrP(phi1: PathFormula, phi2: PathFormula): PathFormula {
  *
  * Reference: TATL elimination_star.ml — whatfalse
  */
-function whatfalse(
+export function whatfalse(
   path: PathFormula,
   ensFrm: StateFormulaSet,
   pathFrm: PathFormulaSet
@@ -990,7 +1126,7 @@ function getEventualityPath(f: StateFormula): PathFormula {
  *
  * Reference: TATL elimination_star.ml — get_ev_non_imm_real
  */
-function getEvNonImmReal(
+export function getEvNonImmReal(
   state: State,
   suppressed: Set<NodeId>
 ): Array<{ ev: FormulaTuple; residual: PathFormula }> {
@@ -1011,7 +1147,7 @@ function getEvNonImmReal(
  *
  * Reference: TATL elimination_star.ml — get_tuple
  */
-function getTuple(frm: StateFormula, eventList: FormulaTuple[]): FormulaTuple | null {
+export function getTuple(frm: StateFormula, eventList: FormulaTuple[]): FormulaTuple | null {
   for (const ev of eventList) {
     if (stateKey(ev.frm) === stateKey(frm)) {
       return ev;
@@ -1129,7 +1265,7 @@ function getNumNextEv(
  *
  * Reference: TATL elimination_star.ml — get_succ_to_be_verified_simpl
  */
-function getSuccToBeVerified(
+export function getSuccToBeVerified(
   ev: FormulaTuple,
   stateId: NodeId,
   state: State,
@@ -1200,8 +1336,30 @@ function getSuccPrestates(
 }
 
 /** Key for a realization node (state, eventuality tuple, residual). */
-function realizationKey(stateId: NodeId, tupleFrm: StateFormula, residual: PathFormula): string {
+export function realizationKey(stateId: NodeId, tupleFrm: StateFormula, residual: PathFormula): string {
   return `${stateId}|${stateKey(tupleFrm)}|${pathKey(residual)}`;
+}
+
+/** One way to continue an eventuality from a node: a successor state. */
+export interface RealizationOption {
+  readonly stateId: NodeId;
+  readonly tuple: FormulaTuple;
+  /** Residual left at the successor; State(⊤) when realized there */
+  readonly residual: PathFormula;
+  /** Follow-up node, or null when realized at the successor */
+  readonly key: string | null;
+}
+
+/** The successors of a node through one consistent prestate (an AND branch). */
+export interface RealizationGroup {
+  readonly prestateId: NodeId;
+  readonly options: RealizationOption[];
+}
+
+export interface RealizationNode {
+  readonly stateId: NodeId;
+  readonly tuple: FormulaTuple;
+  readonly residual: PathFormula;
 }
 
 /**
@@ -1226,19 +1384,25 @@ function realizationKey(stateId: NodeId, tupleFrm: StateFormula, residual: PathF
  * any suppression makes the dovetail loop run another pass with a fresh
  * oracle, so the terminating pass answers every query against the final
  * suppressed set.
+ *
+ * The oracle of the terminating pass is kept on the result: its witnesses
+ * are what model extraction follows, and its failures are what the
+ * unsatisfiability proof reports.
  */
-class RealizationOracle {
-  // Successor structure per node: one group per consistent prestate (AND);
-  // within a group, one option per successor state (OR). An option is either
-  // null (residual fully realized at that successor) or a follow-up node key.
-  private structure = new Map<string, Array<Array<string | null>>>();
-  private realizable = new Set<string>();
+export class RealizationOracle {
+  private structure = new Map<string, RealizationGroup[]>();
+  private nodes = new Map<string, RealizationNode>();
+  /** Fixpoint round in which a node became realizable (a rank: witnesses
+   *  that always step to a lower rank are finite). */
+  private rank = new Map<string, number>();
 
   constructor(
     private states: Map<NodeId, State>,
     private edges: SolidEdge[],
     private allAgents: Coalition,
-    private suppressed: Set<NodeId>
+    private suppressed: Set<NodeId>,
+    /** Edges of the initial tableau, so explanations can name eliminated successors */
+    private allEdges: SolidEdge[] = edges
   ) {}
 
   isRealizable(ev: FormulaTuple, stateId: NodeId, state: State, residual: PathFormula): boolean {
@@ -1247,7 +1411,23 @@ class RealizationOracle {
       this.expand(ev, state, residual, rootKey);
       this.propagate();
     }
-    return this.realizable.has(rootKey);
+    return this.rank.has(rootKey);
+  }
+
+  /** Query a node that may not have been expanded yet. */
+  realizableNode(stateId: NodeId, tuple: FormulaTuple, residual: PathFormula): boolean {
+    const state = this.states.get(stateId);
+    if (!state) return false;
+    return this.isRealizable(tuple, stateId, state, residual);
+  }
+
+  groupsOf(key: string): RealizationGroup[] {
+    return this.structure.get(key) ?? [];
+  }
+
+  rankOf(key: string | null): number {
+    if (key === null) return 0;
+    return this.rank.get(key) ?? Infinity;
   }
 
   /** BFS-expand the AND-OR graph reachable from a root node. */
@@ -1256,31 +1436,34 @@ class RealizationOracle {
       { state, tuple: ev, residual, key: rootKey },
     ];
     this.structure.set(rootKey, []);
+    this.nodes.set(rootKey, { stateId: state.id, tuple: ev, residual });
 
     while (queue.length > 0) {
+      checkDeadline();
       const node = queue.shift()!;
-      const groups: Array<Array<string | null>> = [];
+      const groups: RealizationGroup[] = [];
       // Empty prestate list (continuation resolved or not an eventuality)
       // means a vacuous AND: the node is realizable.
       const prestates = getSuccToBeVerified(
         node.tuple, node.state.id, node.state, this.edges, this.allAgents, this.suppressed
       );
       for (const prestateId of prestates) {
-        const options: Array<string | null> = [];
+        const options: RealizationOption[] = [];
         for (const { state: succ, evTuple } of getSuccPrestates(node.tuple, prestateId, this.edges, this.states, this.suppressed)) {
           const nextResidual = whatfalse(node.residual, succ.formulas, evTuple.pathFrm);
           if (nextResidual.kind === "state" && nextResidual.sub.kind === "top") {
-            options.push(null);
+            options.push({ stateId: succ.id, tuple: evTuple, residual: nextResidual, key: null });
           } else {
             const key = realizationKey(succ.id, evTuple.frm, nextResidual);
             if (!this.structure.has(key)) {
               this.structure.set(key, []);
+              this.nodes.set(key, { stateId: succ.id, tuple: evTuple, residual: nextResidual });
               queue.push({ state: succ, tuple: evTuple, residual: nextResidual, key });
             }
-            options.push(key);
+            options.push({ stateId: succ.id, tuple: evTuple, residual: nextResidual, key });
           }
         }
-        groups.push(options);
+        groups.push({ prestateId, options });
       }
       this.structure.set(node.key, groups);
     }
@@ -1294,18 +1477,91 @@ class RealizationOracle {
    */
   private propagate(): void {
     let changed = true;
+    let round = 1;
     while (changed) {
+      checkDeadline();
       changed = false;
+      const newly: string[] = [];
       for (const [key, groups] of this.structure) {
-        if (this.realizable.has(key)) continue;
-        const ok = groups.every((options) =>
-          options.some((opt) => opt === null || this.realizable.has(opt))
+        if (this.rank.has(key)) continue;
+        const ok = groups.every((g) =>
+          g.options.some((opt) => opt.key === null || this.rank.has(opt.key))
         );
-        if (ok) {
-          this.realizable.add(key);
-          changed = true;
-        }
+        if (ok) newly.push(key);
+      }
+      for (const key of newly) {
+        this.rank.set(key, round);
+        changed = true;
+      }
+      round++;
+    }
+  }
+
+  /**
+   * Why a node is not realizable: the first AND branch (prestate) none of
+   * whose options works, with each option's own reason. Cycles back to a
+   * node already on the explanation path are reported as such.
+   */
+  private explained = new Set<string>();
+  private explainBudget = 0;
+
+  explain(key: string, path: string[] = []): RealizationFailure {
+    if (path.length === 0) {
+      this.explained = new Set();
+      this.explainBudget = 400;
+    }
+    const node = this.nodes.get(key)!;
+    const groups = this.structure.get(key) ?? [];
+    const failing = groups.find((g) =>
+      !g.options.some((opt) => opt.key === null || this.rank.has(opt.key))
+    );
+    // The AND-OR graph shares nodes; explain each one once
+    if (this.explained.has(key) || this.explainBudget-- <= 0) {
+      return {
+        stateId: node.stateId,
+        eventuality: node.tuple.frm,
+        residual: node.residual,
+        prestateId: failing?.prestateId ?? null,
+        seeAbove: true,
+        options: [],
+      };
+    }
+    this.explained.add(key);
+    const stack = [...path, key];
+    // Successors through the failing prestate that were eliminated earlier
+    // are not among the options; the explanation still names them.
+    const eliminated: RealizationFailure["options"] = [];
+    if (failing) {
+      const seen = new Set(failing.options.map((o) => o.stateId));
+      for (const e of this.allEdges) {
+        if (e.from !== node.stateId || e.viaPrestate !== failing.prestateId) continue;
+        if (seen.has(e.to) || !this.suppressed.has(e.to)) continue;
+        seen.add(e.to);
+        eliminated.push({ stateId: e.to, residual: node.residual, status: "eliminated" });
       }
     }
+    return {
+      stateId: node.stateId,
+      eventuality: node.tuple.frm,
+      residual: node.residual,
+      prestateId: failing?.prestateId ?? null,
+      options: [...eliminated, ...(failing?.options ?? []).map((opt) => {
+        if (this.suppressed.has(opt.stateId)) {
+          return { stateId: opt.stateId, residual: opt.residual, status: "eliminated" as const };
+        }
+        if (opt.key !== null && stack.includes(opt.key)) {
+          return { stateId: opt.stateId, residual: opt.residual, status: "cycle" as const };
+        }
+        if (stack.length > 12) {
+          return { stateId: opt.stateId, residual: opt.residual, status: "truncated" as const };
+        }
+        return {
+          stateId: opt.stateId,
+          residual: opt.residual,
+          status: "unrealizable" as const,
+          failure: this.explain(opt.key!, stack),
+        };
+      })],
+    };
   }
 }

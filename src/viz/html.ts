@@ -491,6 +491,29 @@ input.agent-add-input.visible { display: inline-block; }
   color: var(--text-muted); font-size: 0.9em;
 }
 
+/* Proof tree */
+.proof-tree, .proof-tree ul { list-style: none; margin: 0; padding-left: 0; }
+.proof-tree ul { margin-left: 14px; padding-left: 12px; border-left: 2px solid var(--border); }
+.proof-tree li { margin: 6px 0; font-size: 0.84em; line-height: 1.55; color: var(--text-muted); }
+.proof-tree .proof-state { color: var(--text); }
+.proof-tree .proof-reason { margin-top: 2px; }
+.proof-id { font-weight: 600; color: var(--text); }
+.proof-tree .katex { font-size: 0.88em; }
+.elim-details { margin-top: 12px; }
+.elim-details summary { cursor: pointer; font-size: 0.82em; color: var(--text-muted); }
+
+/* Model */
+.model-card {
+  background: var(--surface); border: 1px solid #b7e1c2;
+  border-radius: 8px; padding: 18px; margin-bottom: 16px;
+  border-left: 4px solid var(--accent);
+}
+.model-card h3 { font-size: 0.92em; font-weight: 600; color: var(--text); margin-bottom: 6px; }
+.model-card .model-summary { font-size: 0.82em; color: var(--text-muted); line-height: 1.6; }
+.state-item.initial { border-left-color: var(--accent); background: var(--highlight); }
+.state-origin { color: var(--text-muted); font-size: 0.78em; margin-top: 3px; }
+.simplified-line { font-size: 0.8em; opacity: 0.85; margin-top: 4px; }
+
 #result-section { display: none; }
 
 /* Loading */
@@ -735,6 +758,7 @@ input.agent-add-input.visible { display: inline-block; }
             </div>
           </div>
           <div class="phase-tabs">
+            <button class="phase-tab" data-phase="model" id="tab-model" onclick="showPhase('model', this)" title="A small model read off the final tableau: states are labelled by the literals true there, edges by move vectors">Model</button>
             <button class="phase-tab active" data-phase="final" onclick="showPhase('final', this)">Final Tableau</button>
             <button class="phase-tab" data-phase="initial" onclick="showPhase('initial', this)">Initial Tableau</button>
             <button class="phase-tab" data-phase="pretableau" onclick="showPhase('pretableau', this)">Pretableau</button>
@@ -1010,6 +1034,7 @@ function showSolveError(msg) {
 function getDotKey() {
   var detailed = document.getElementById('opt-detailed').checked;
   var eliminated = document.getElementById('opt-eliminated').checked;
+  if (currentPhase === 'model') return 'model';
   if (currentPhase === 'pretableau') return detailed ? 'pretableauDetailed' : 'pretableau';
   if (currentPhase === 'initial') return detailed ? 'initialDetailed' : 'initial';
   // final phase has more variants
@@ -1032,6 +1057,7 @@ function onGraphOptionChange() {
 
 function updateGraphOptionsVisibility() {
   document.getElementById('graph-options').style.display = currentView === 'graph' ? 'flex' : 'none';
+  document.getElementById('opt-detailed').parentElement.style.display = currentPhase === 'model' ? 'none' : '';
   // Show "eliminated" checkbox only on final phase and when there are eliminations
   var showElimLabel = document.getElementById('opt-eliminated-label');
   var hasElims = lastResult && lastResult.eliminations && lastResult.eliminations.length > 0;
@@ -1050,11 +1076,13 @@ function setView(view) {
   }
 }
 
-var graphPhaseNames = { final: 'Final Tableau', initial: 'Initial Tableau', pretableau: 'Pretableau' };
+var graphPhaseNames = { model: 'Model', final: 'Final Tableau', initial: 'Initial Tableau', pretableau: 'Pretableau' };
 
 function addDotTitle(dot, formula, phase) {
   var title = (formula ? formula + '  \\u2014  ' : '') + (graphPhaseNames[phase] || '');
-  return dot.replace('digraph tableau {', 'digraph tableau {\\n  label="' + escDotStr(title) + '"; labelloc=t; fontsize=16; fontname="Helvetica";');
+  return dot.replace(/digraph (\\w+) \\{/, function(m, name) {
+    return 'digraph ' + name + ' {\\n  label="' + escDotStr(title) + '"; labelloc=t; fontsize=16; fontname="Helvetica";';
+  });
 }
 
 // Track which dotKey is currently rendered in graph-view
@@ -1687,7 +1715,35 @@ function displayPhase(result, phase) {
   let html = '';
 
   let states, edges;
-  if (phase === 'pretableau') {
+  if (phase === 'model') {
+    var m = result.model;
+    if (!m) {
+      html += '<div class="empty-notice">No model: the formula is unsatisfiable, or the model was too large to extract</div>';
+    } else {
+      html += '<div class="section-label">States (' + m.states.length + ')</div>';
+      html += '<div class="state-list">';
+      for (const st of m.states) {
+        html += '<div class="state-item' + (st.initial ? ' initial' : '') + '">';
+        html += '<div class="state-id">' + st.id + (st.initial ? ' (initial)' : '') + '</div>';
+        html += '<div class="state-formulas" data-tex="' + escAttr(st.literalsLatex) + '"></div>';
+        html += '<div class="state-origin">from tableau state' + (st.tableauStates.length > 1 ? 's ' : ' ') + st.tableauStates.join(', ') + '</div>';
+        html += '</div>';
+      }
+      html += '</div>';
+      html += '<div class="section-label">Transitions (' + m.edges.length + ')</div>';
+      html += '<div class="state-list">';
+      for (const e of m.edges) {
+        html += '<div class="edge-item">';
+        html += '<span style="font-weight:600;color:var(--accent)">' + e.from + '</span>';
+        html += '<span class="edge-arrow">&xrarr;</span>';
+        html += '<span style="font-weight:600;color:var(--accent)">' + e.to + '</span>';
+        html += '<span style="color:var(--text-muted);font-size:0.85em">via</span>';
+        html += '<span class="edge-label" data-tex="' + escAttr(e.labelLatex) + '"></span>';
+        html += '</div>';
+      }
+      html += '</div>';
+    }
+  } else if (phase === 'pretableau') {
     states = result.pretableau.states;
     edges = result.pretableau.solidEdges;
     const prestates = result.pretableau.prestates;
@@ -1784,7 +1840,29 @@ function renderEliminationTrace(result) {
   var html = '<div class="elimination-card">';
   html += '<h3>Why is this unsatisfiable?</h3>';
 
-  if (result.stats.pretableauStates === 0) {
+  if (result.proofHtml) {
+    html += '<div class="elim-summary">' + result.proofHtml + '</div>';
+    if (result.eliminations.length > 0) {
+      html += '<details class="elim-details"><summary>All ' + result.eliminations.length + ' eliminations, in order</summary>';
+      html += '<div class="elim-list" style="margin-top:8px">';
+      for (var i = 0; i < result.eliminations.length; i++) {
+        var e = result.eliminations[i];
+        html += '<div class="elim-item">';
+        html += '<span class="elim-badge ' + e.rule.toLowerCase() + '">' + e.rule + '</span>';
+        html += '<span class="elim-id">' + e.stateId + '</span>';
+        html += '<div class="elim-reason">';
+        if (e.rule === 'E2') {
+          html += 'Move vector had no surviving successor state for <span data-tex="' + escAttr(e.formulaLatex) + '"></span>';
+        } else {
+          html += 'Eventuality <span data-tex="' + escAttr(e.formulaLatex) + '"></span> could not be realized (no finite witness path)';
+        }
+        html += '<div class="elim-formulas">State contained: <span data-tex="' + escAttr(e.stateFormulasLatex) + '"></span></div>';
+        html += '</div>';
+        html += '</div>';
+      }
+      html += '</div></details>';
+    }
+  } else if (result.stats.pretableauStates === 0) {
     // No states were ever created — patent inconsistency during expansion
     html += '<div class="elim-summary">';
     html += 'All formula expansions led to <strong>contradictions</strong>. ';
@@ -1847,7 +1925,11 @@ function displayResult(result, solveState) {
     '<div class="banner-stat" title="Phase 1 (Construction): Total nodes in the pretableau graph (' + result.stats.pretableauPrestates + ' prestates + ' + result.stats.pretableauStates + ' states). Prestates are intermediate expansion nodes; states are fully expanded possible worlds."><div class="num">' + pretableauNodes + '</div><div class="label">Pretableau</div></div>' +
     '<div class="banner-stat" title="Phase 2 (Prestate Elimination): States remaining after removing prestates and rewiring edges into direct state-to-state transitions. This is the starting point for state elimination."><div class="num">' + result.stats.initialStates + '</div><div class="label">Initial</div></div>' +
     '<div class="banner-stat" title="Phase 3 (State Elimination): States surviving after removing defective states via rules E2 (missing successors) and E3 (unrealized eventualities). The formula is satisfiable iff this is greater than 0."><div class="num">' + result.stats.finalStates + '</div><div class="label">Final</div></div>' +
+    (result.model ? '<div class="banner-stat" title="A model read off the final tableau and minimised by bisimulation."><div class="num">' + result.model.states.length + '</div><div class="label">Model</div></div>' : '') +
     '</div>';
+  var simplifiedHtml = result.simplifiedLatex
+    ? '<div class="simplified-line">simplified to <span data-tex="' + escAttr(result.simplifiedLatex) + '"></span></div>'
+    : '';
   // The agent set is only meaningful for ATL*; LTL, CTL and CTL* always run
   // over the single agent their translation introduces.
   // Use the system the result was computed for, not whatever the dropdown says
@@ -1862,11 +1944,11 @@ function displayResult(result, solveState) {
   if (result.satisfiable) {
     banner.className = 'result-banner sat';
     banner.innerHTML = '<span class="icon">&#10003;</span><div><div>Satisfiable</div>' +
-      '<div class="result-formula" data-tex="' + escAttr(result.inputLatex) + '"></div>' + agentsHtml + '</div>' + statsHtml;
+      '<div class="result-formula" data-tex="' + escAttr(result.inputLatex) + '"></div>' + simplifiedHtml + agentsHtml + '</div>' + statsHtml;
   } else {
     banner.className = 'result-banner unsat';
     banner.innerHTML = '<span class="icon">&#10007;</span><div><div>Unsatisfiable</div>' +
-      '<div class="result-formula" data-tex="' + escAttr(result.inputLatex) + '"></div>' + agentsHtml + '</div>' + statsHtml;
+      '<div class="result-formula" data-tex="' + escAttr(result.inputLatex) + '"></div>' + simplifiedHtml + agentsHtml + '</div>' + statsHtml;
   }
   banner.querySelectorAll('[data-tex]').forEach(function(el) {
     renderLatex(el, el.dataset.tex);
@@ -1879,15 +1961,16 @@ function displayResult(result, solveState) {
   document.getElementById('opt-detailed').checked = false;
   document.getElementById('opt-eliminated').checked = false;
 
-  // Reset to final tab
-  currentPhase = 'final';
+  // Open on the model when there is one, else on the final tableau
+  document.getElementById('tab-model').style.display = result.model ? '' : 'none';
+  currentPhase = result.model ? 'model' : 'final';
   document.querySelectorAll('.phase-tab').forEach(t => t.classList.remove('active'));
-  document.querySelector('.phase-tab[data-phase="final"]').classList.add('active');
+  document.querySelector('.phase-tab[data-phase="' + currentPhase + '"]').classList.add('active');
   renderedDotKey = null; // Reset so renderGraph does not skip
   updateGraphOptionsVisibility();
-  displayPhase(result, 'final');
+  displayPhase(result, currentPhase);
   // Render graph with title (title hidden in web view via CSS, visible on export/fullscreen)
-  renderGraph(result, 'final');
+  renderGraph(result, currentPhase);
   
   // Update browser URL and history
   if (solveState && !solveState.fromHistory) {
